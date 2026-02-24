@@ -1,0 +1,16 @@
+# docker-compose.yml
+version: "3.8"
+
+services:
+  shadow-settlement-relayer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shadow-settlement-relayer:latest
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=debug
+      - DATABASE_URL=postgresql://neondb_owner:npg_SYu46PfdojWR@ep-morning-paper-ag9fxuci-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
