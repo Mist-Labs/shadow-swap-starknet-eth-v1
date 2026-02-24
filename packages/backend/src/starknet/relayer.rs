@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use num_traits::ToPrimitive;
 use starknet::{
     accounts::{Account, ExecutionEncoding, SingleOwnerAccount},
@@ -526,12 +526,7 @@ impl StarkNetRelayer {
         Ok(tx.transaction_hash)
     }
 
-    pub async fn rescue_tokens(
-        &self,
-        token: Felt,
-        to: Felt,
-        amount: (Felt, Felt),
-    ) -> Result<Felt> {
+    pub async fn rescue_tokens(&self, token: Felt, to: Felt, amount: (Felt, Felt)) -> Result<Felt> {
         let account = self.require_account()?;
 
         let call = Call {
@@ -568,6 +563,102 @@ impl StarkNetRelayer {
 
         let tx = account.execute_v3(vec![call]).send().await?;
         Ok(tx.transaction_hash)
+    }
+
+    pub async fn get_delivered_token_and_amount(&self, tx_hash: &str) -> Result<(String, String)> {
+        let tx_hash_felt = Felt::from_hex(tx_hash).map_err(|e| {
+            anyhow!(
+                "Invalid StarkNet tx hash '{}': {}",
+                &tx_hash[..18.min(tx_hash.len())],
+                e
+            )
+        })?;
+
+        let receipt = self
+            .wait_for_transaction(tx_hash_felt)
+            .await
+            .context("Failed to fetch StarkNet transaction receipt")?;
+
+        let events = match &receipt {
+            TransactionReceipt::Invoke(r) => &r.events,
+            _ => {
+                return Err(anyhow!(
+                    "StarkNet delivery TX is not an Invoke transaction: {}",
+                    &tx_hash[..18.min(tx_hash.len())]
+                ));
+            }
+        };
+
+        let settlement_addr = Felt::from_hex(self.contract_address_hex().trim_start_matches("0x"))
+            .map_err(|e| anyhow!("Invalid settlement contract address: {}", e))?;
+
+        let transfer_selector =
+            get_selector_from_name("Transfer").map_err(|e| anyhow!("Selector error: {}", e))?;
+
+        // Transfer event keys: [selector, from_address, to_address]
+        // Transfer event data:  [amount_low (u128), amount_high (u128)]
+        // The emitting contract is the token contract.
+        for event in events {
+            if event.keys.len() >= 3
+                && event.keys[0] == transfer_selector
+                && event.keys[2] == settlement_addr
+                && event.data.len() >= 2
+            {
+                // Token contract = event emitter (from_address field in event struct)
+                let token_address = format!("0x{:064x}", event.from_address);
+
+                // Amount is uint256: low u128 + high u128
+                let amount_low: u128 = event.data[0]
+                    .to_biguint()
+                    .try_into()
+                    .map_err(|_| anyhow!("amount_low overflows u128"))?;
+                let amount_high: u128 = event.data[1]
+                    .to_biguint()
+                    .try_into()
+                    .map_err(|_| anyhow!("amount_high overflows u128"))?;
+
+                let amount = (amount_high as u128)
+                    .checked_shl(128)
+                    .map(|h| h + amount_low as u128)
+                    .unwrap_or(amount_low as u128); // saturate; amounts this large are impossible
+
+                let amount_str = amount.to_string();
+
+                info!(
+                    "StarkNet delivered token={} amount={} in tx {}",
+                    &token_address,
+                    &amount_str,
+                    &tx_hash[..18.min(tx_hash.len())]
+                );
+
+                return Ok((token_address, amount_str));
+            }
+        }
+
+        Err(anyhow!(
+            "No Transfer to settlement contract found in StarkNet TX: {}",
+            &tx_hash[..18.min(tx_hash.len())]
+        ))
+    }
+
+    /// Confirm a transaction exists on StarkNet (any non-Rejected status).
+    /// Used by RelayCoordinator (relay stage) and SettlementCoordinator
+    /// symmetrically with EvmRelayer::verify_transaction_exists.
+    pub async fn verify_transaction_exists(&self, tx_hash: &str) -> Result<bool> {
+        let tx_hash_felt =
+            Felt::from_hex(tx_hash).map_err(|e| anyhow!("Invalid StarkNet tx hash: {}", e))?;
+
+        match self.wait_for_transaction(tx_hash_felt).await {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                warn!(
+                    "StarkNet tx {} not found or rejected: {}",
+                    &tx_hash[..18.min(tx_hash.len())],
+                    e
+                );
+                Ok(false)
+            }
+        }
     }
 
     // ==============================================================

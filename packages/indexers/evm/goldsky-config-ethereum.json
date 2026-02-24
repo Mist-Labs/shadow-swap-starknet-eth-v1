@@ -10,9 +10,9 @@
   "instances": [
     {
       "abi": "Settlement",
-      "address": "0x239365b4A26d947B9CE38ec88A804F03b8248042",
+      "address": "0xDcDdb3E6EA09dA3a93B1f41BCd017156Ce8b9468",
       "chain": "mainnet",
-      "startBlock": 24495772
+      "startBlock": 24515523
     }
   ]
 }

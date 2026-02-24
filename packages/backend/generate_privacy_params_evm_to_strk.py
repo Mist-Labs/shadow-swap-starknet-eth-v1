@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
 Generate Privacy Parameters for ShadowSwap + get NEAR deposit address.
+Direction: EVM (ETH/USDC/USDT) → StarkNet (STRK/ETH)
 
 Steps:
-  1. Generates Poseidon commitment + ECIES-encrypted params (StarkNet source chain)
+  1. Generates Keccak256 commitment + ECIES-encrypted params (EVM source chain)
   2. Calls NEAR 1Click /v0/quote → gets deposit_address + correlationId
-  3. Prints everything needed to call /api/v1/bridge/initiate
+  3. Posts to /api/v1/bridge/initiate
 
-near_intents_id = correlationId from NEAR quote response (UUID, 128-bit, fits felt252)
+Hash: Keccak256 (EVM source) — NOT Poseidon.
+near_intents_id = correlationId from NEAR (UUID, 128-bit, fits felt252).
 NEVER use a random 32-byte hex for near_intents_id — it overflows felt252.
 """
 
 import os, sys, secrets, json, hmac as hmaclib, hashlib, time, requests
 from datetime import datetime, timezone, timedelta
 from ecies import encrypt
-from poseidon_py.poseidon_hash import poseidon_hash_many
+from eth_hash.auto import keccak
 
 # ── Load env ─────────────────────────────────────────────────────────────────
 with open('.env') as f:
@@ -26,35 +28,55 @@ with open('.env') as f:
 
 NEAR_API_KEY       = os.environ['NEAR_API_KEY']
 RELAYER_PUBLIC_KEY = os.environ['RELAYER_PUBLIC_KEY']
-EVM_SETTLEMENT     = os.environ['EVM_SETTLEMENT_ADDRESS']
-SN_ACCOUNT         = os.environ['STARKNET_ACCOUNT_ADDRESS']
+SN_SETTLEMENT      = os.environ['STARKNET_CONTRACT_ADDRESS']   # NEAR delivers here
+EVM_ACCOUNT        = os.environ['EVM_ACCOUNT_ADDRESS']         # refundTo on failed swap
 HMAC_SECRET        = os.environ['HMAC_SECRET']
 BACKEND            = "http://127.0.0.1:8080"
 
 # ── Swap parameters (edit as needed) ─────────────────────────────────────────
-AMOUNT_STRK   = "7500000000000000000"  # 7 STRK (18 decimals)
-STRK_TOKEN    = "0x04718f5a0Fc34cC1AF16A1cdee98fFB20C31f5cD61D6Ab07201858f4287c938D"
-RECIPIENT_EVM = "0x2af423ba8cd60fe7ca0bbcc4cf1f4e6a7e576039"
+# Source: EVM USDT (6 decimals). Destination: StarkNet STRK.
+AMOUNT_USDT   = "300000"   # 2 USDT (6 decimals)
+USDT_TOKEN    = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+RECIPIENT_SN  = os.environ['STARKNET_ACCOUNT_ADDRESS']  # StarkNet recipient
+
+# NEAR asset IDs for EVM → StarkNet direction
+NEAR_ORIGIN_ASSET = "nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near"
+NEAR_DEST_ASSET   = "nep141:starknet.omft.near"
+
+# dest_chain felt: 2 = StarkNet (must match contract enum — adjust if yours differs)
+DEST_CHAIN_FELT = 2
 
 print("=" * 70)
-print("SHADOWSWAP — INITIATE BRIDGE (StarkNet STRK → EVM USDT)")
+print("SHADOWSWAP — INITIATE BRIDGE (EVM USDT → StarkNet STRK)")
 print("=" * 70)
 
-# ── 1. Privacy params (Poseidon for StarkNet source) ─────────────────────────
+# ── 1. Privacy params (Keccak256 for EVM source) ─────────────────────────────
 secret    = secrets.token_hex(32)
 nullifier = secrets.token_hex(32)
 
-secret_felt = int(secret, 16)
-null_felt   = int(nullifier, 16)
-amount_felt = int(AMOUNT_STRK)
-token_felt  = int(STRK_TOKEN, 16)
-dest_felt   = 1  # EVM
+secret_bytes    = bytes.fromhex(secret)
+nullifier_bytes = bytes.fromhex(nullifier)
 
-nullifier_hash_felt = poseidon_hash_many([null_felt])
-commitment_felt     = poseidon_hash_many([secret_felt, null_felt, amount_felt, token_felt, dest_felt])
-nullifier_hash = "0x" + format(nullifier_hash_felt, '064x')
-commitment     = "0x" + format(commitment_felt,     '064x')
+# EVM commitment: keccak256(secret || nullifier || amount || token || destChain)
+# Matches EVM contract: keccak256(abi.encodePacked(secret, nullifier, amount, token, destChain))
+amount_int    = int(AMOUNT_USDT)
+token_int     = int(USDT_TOKEN, 16)
+dest_int      = DEST_CHAIN_FELT
 
+commitment_preimage = (
+    secret_bytes
+    + nullifier_bytes
+    + amount_int.to_bytes(32, 'big')
+    + token_int.to_bytes(32, 'big')
+    + dest_int.to_bytes(32, 'big')
+)
+commitment_felt    = int.from_bytes(keccak(commitment_preimage), 'big')
+nullifier_hash_int = int.from_bytes(keccak(nullifier_bytes), 'big')
+
+commitment     = "0x" + format(commitment_felt,    '064x')
+nullifier_hash = "0x" + format(nullifier_hash_int, '064x')
+
+# ── ECIES encrypt privacy params ─────────────────────────────────────────────
 pub_key_hex = RELAYER_PUBLIC_KEY
 for pfx in ("0x04", "04"):
     if pub_key_hex.startswith(pfx):
@@ -64,24 +86,22 @@ pub_key_bytes = bytes.fromhex(pub_key_hex)
 
 enc_secret    = "0x" + encrypt(pub_key_bytes, bytes.fromhex(secret)).hex()
 enc_nullifier = "0x" + encrypt(pub_key_bytes, bytes.fromhex(nullifier)).hex()
-enc_recipient = "0x" + encrypt(pub_key_bytes, RECIPIENT_EVM.lower().encode()).hex()
+enc_recipient = "0x" + encrypt(pub_key_bytes, RECIPIENT_SN.lower().encode()).hex()
 
 print(f"\ncommitment:     {commitment}")
 print(f"nullifier_hash: {nullifier_hash}")
 
 # ── 2. NEAR 1Click /v0/quote ─────────────────────────────────────────────────
-# correlationId returned by NEAR IS the near_intents_id.
-# NEVER use a random value — UUIDs fit felt252 (128-bit), random 32-byte overflows it.
 deadline = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
 quote_body = {
     "dry": False,
     "swapType": "EXACT_INPUT",
     "slippageTolerance": 100,  # 1%
-    "originAsset": "nep141:starknet.omft.near",
-    "destinationAsset": "nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near",
-    "amount": AMOUNT_STRK,
-    "recipient": EVM_SETTLEMENT,   # NEAR delivers to settlement contract, NOT end user
-    "refundTo": SN_ACCOUNT,
+    "originAsset": NEAR_ORIGIN_ASSET,
+    "destinationAsset": NEAR_DEST_ASSET,
+    "amount": AMOUNT_USDT,
+    "recipient": SN_SETTLEMENT,   # NEAR delivers to StarkNet settlement contract
+    "refundTo": EVM_ACCOUNT,
     "depositType": "ORIGIN_CHAIN",
     "refundType": "ORIGIN_CHAIN",
     "recipientType": "DESTINATION_CHAIN",
@@ -101,7 +121,6 @@ if not q.ok:
 
 qd = q.json()
 deposit_address = qd.get("quote", {}).get("depositAddress")
-# correlationId from NEAR == near_intents_id (UUID, always fits felt252)
 near_intents_id = qd.get("correlationId") or qd.get("correlation_id")
 min_out = qd.get("quote", {}).get("minAmountOut", "?")
 
@@ -114,7 +133,7 @@ if not near_intents_id:
 
 print(f"✅ deposit_address:  {deposit_address}")
 print(f"   near_intents_id:  {near_intents_id}  (= NEAR correlationId)")
-print(f"   min USDT out:     {min_out}")
+print(f"   min STRK out:     {min_out}")
 
 # ── 3. POST /api/v1/bridge/initiate ──────────────────────────────────────────
 intent_id = "0x" + secrets.token_hex(32)
@@ -126,11 +145,11 @@ payload = json.dumps({
     "nullifier_hash":      nullifier_hash,
     "view_key":            view_key,
     "near_intents_id":     near_intents_id,
-    "source_chain":        "starknet",
-    "dest_chain":          "evm",
+    "source_chain":        "evm",
+    "dest_chain":          "starknet",
     "encrypted_recipient": enc_recipient,
-    "token":               STRK_TOKEN,
-    "amount":              AMOUNT_STRK,
+    "token":               USDT_TOKEN,
+    "amount":              AMOUNT_USDT,
     "deposit_address":     deposit_address,
     "encrypted_secret":    enc_secret,
     "encrypted_nullifier": enc_nullifier,
@@ -151,7 +170,7 @@ print(f"\nBackend ({resp.status_code}): {resp.text[:300]}")
 if resp.ok:
     print(f"\n{'=' * 70}")
     print(f"🎯 Intent ID:       {intent_id}")
-    print(f"📬 Send 7.5 STRK to:  {deposit_address}")
+    print(f"📬 Send {int(AMOUNT_USDT)/1e6} USDT to: {deposit_address}")
     print(f"{'=' * 70}")
     print(f"\nPlaintext (keep secure):")
     print(f"  secret:    {secret}")

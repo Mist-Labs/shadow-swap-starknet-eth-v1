@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use ethers::{
     contract::abigen,
     core::types::{Address, H256, U256},
@@ -51,8 +51,8 @@ impl EvmRelayer {
         private_key: Option<&str>,
         owner_private_key: Option<&str>,
     ) -> Result<Self> {
-        let provider = Provider::<Http>::try_from(rpc_url)?
-            .interval(std::time::Duration::from_millis(2000));
+        let provider =
+            Provider::<Http>::try_from(rpc_url)?.interval(std::time::Duration::from_millis(2000));
         let provider = Arc::new(provider);
 
         let contract_address: Address = contract_address.parse()?;
@@ -61,7 +61,10 @@ impl EvmRelayer {
         let make_contract = |pk: &str| -> Result<SignedContract> {
             let wallet: LocalWallet = pk.parse::<LocalWallet>()?.with_chain_id(chain_id);
             let client = SignerMiddleware::new((*provider).clone(), wallet);
-            Ok(ShadowSettlementContract::new(contract_address, Arc::new(client)))
+            Ok(ShadowSettlementContract::new(
+                contract_address,
+                Arc::new(client),
+            ))
         };
 
         let contract = private_key.map(make_contract).transpose()?;
@@ -92,7 +95,7 @@ impl EvmRelayer {
         info!("📝 [EVM] Adding commitment to pending batch");
 
         let commitment_bytes: [u8; 32] = hex_to_bytes32(commitment)?;
-        let near_id_bytes: [u8; 32] = hex_to_bytes32(near_intents_id)?;
+        let near_id_bytes: [u8; 32] = hex_to_bytes32_padded(&near_intents_id.replace('-', ""))?;
         let view_key_bytes: [u8; 32] = hex_to_bytes32(view_key)?;
 
         let tx = contract
@@ -228,12 +231,7 @@ impl EvmRelayer {
     //
     // Called when normal settlement fails after timeout.
     // Uses EVM_OWNER_PRIVATE_KEY — bypasses proof, transfers tokens directly.
-    pub async fn rescue_tokens(
-        &self,
-        token: &str,
-        recipient: &str,
-        amount: &str,
-    ) -> Result<H256> {
+    pub async fn rescue_tokens(&self, token: &str, recipient: &str, amount: &str) -> Result<H256> {
         let contract = self
             .owner_contract
             .as_ref()
@@ -252,7 +250,12 @@ impl EvmRelayer {
             .rescue_tokens(token_addr, recipient_addr, amount_u256)
             .send()
             .await
-            .with_context(|| format!("rescue_tokens: send failed (token={} recipient={} amount={})", token, recipient, amount))?
+            .with_context(|| {
+                format!(
+                    "rescue_tokens: send failed (token={} recipient={} amount={})",
+                    token, recipient, amount
+                )
+            })?
             .await
             .with_context(|| "rescue_tokens: waiting for receipt failed")?
             .ok_or_else(|| anyhow!("rescue_tokens: transaction dropped from mempool"))?;
@@ -319,7 +322,10 @@ impl EvmRelayer {
     // Simpler verification: just check if TX exists and succeeded
     // Used for cross-chain swaps where token changes (e.g., STRK -> USDT)
     pub async fn verify_transaction_exists(&self, tx_hash: &str) -> Result<bool> {
-        info!("🔍 [EVM] Verifying TX exists: {}", &tx_hash[..18.min(tx_hash.len())]);
+        info!(
+            "🔍 [EVM] Verifying TX exists: {}",
+            &tx_hash[..18.min(tx_hash.len())]
+        );
 
         let tx_hash: H256 = tx_hash.parse()?;
         let receipt = self
@@ -537,6 +543,17 @@ fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
 
     let mut array = [0u8; 32];
     array.copy_from_slice(&bytes);
+    Ok(array)
+}
+
+fn hex_to_bytes32_padded(hex: &str) -> Result<[u8; 32]> {
+    let hex = hex.trim_start_matches("0x");
+    let bytes = hex::decode(hex).context("Invalid hex string")?;
+    if bytes.len() > 32 {
+        return Err(anyhow!("Expected <= 32 bytes, got {}", bytes.len()));
+    }
+    let mut array = [0u8; 32];
+    array[32 - bytes.len()..].copy_from_slice(&bytes);
     Ok(array)
 }
 
