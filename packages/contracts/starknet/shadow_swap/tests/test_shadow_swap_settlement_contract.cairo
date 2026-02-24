@@ -27,7 +27,13 @@ fn deploy_settlement(owner: ContractAddress, relayer: ContractAddress) -> IShado
 fn deploy_mock_token(owner: ContractAddress) -> IERC20Dispatcher {
     let contract = declare("MockERC20").unwrap().contract_class();
     let mut calldata = array![];
+    let name: ByteArray = "Mock Token";
+    let symbol: ByteArray = "MTK";
+    let decimals: u8 = 18;
     let initial_supply: u256 = 1000000_u256;
+    name.serialize(ref calldata);
+    symbol.serialize(ref calldata);
+    decimals.serialize(ref calldata);
     initial_supply.serialize(ref calldata);
     owner.serialize(ref calldata);
     let (address, _) = contract.deploy(@calldata).unwrap();
@@ -932,6 +938,31 @@ fn test_set_token_whitelist_delist() {
     stop_cheat_caller_address(dispatcher.contract_address);
     
     assert!(!dispatcher.is_token_whitelisted(token.contract_address), "Token should be delisted");
+}
+
+#[test]
+#[should_panic(expected: "Token whitelist status unchanged")]
+fn test_set_token_whitelist_reverts_if_already_whitelisted() {
+    let owner = contract_address_const::<'owner'>();
+    let relayer = contract_address_const::<'relayer'>();
+    let token = contract_address_const::<'token'>();
+    let dispatcher = deploy_settlement(owner, relayer);
+
+    start_cheat_caller_address(dispatcher.contract_address, owner);
+    dispatcher.set_token_whitelist(token, true);
+    dispatcher.set_token_whitelist(token, true);
+}
+
+#[test]
+#[should_panic(expected: "Token whitelist status unchanged")]
+fn test_set_token_whitelist_reverts_if_already_delisted() {
+    let owner = contract_address_const::<'owner'>();
+    let relayer = contract_address_const::<'relayer'>();
+    let token = contract_address_const::<'token'>();
+    let dispatcher = deploy_settlement(owner, relayer);
+
+    start_cheat_caller_address(dispatcher.contract_address, owner);
+    dispatcher.set_token_whitelist(token, false);
 }
 
 // ===== VIEW KEY TESTS =====

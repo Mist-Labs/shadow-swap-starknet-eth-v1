@@ -1,0 +1,15 @@
+[workspace]
+members = [
+  "packages/backend"
+]
+
+resolver = "2"
+
+[patch.crates-io]
+starknet = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-accounts = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-providers = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-core = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-signers = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-contract = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-crypto = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }

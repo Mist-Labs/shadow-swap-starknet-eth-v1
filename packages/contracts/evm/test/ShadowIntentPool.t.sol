@@ -735,6 +735,21 @@ contract ShadowSettlementTest is Test {
         pool.settleAndRelease(intentId1, nullifier1, user, address(mockToken), 1000 ether);
     }
 
+    function test_SetTokenWhitelist_RevertsIfAlreadyWhitelisted() public {
+        // mockToken was already whitelisted in setUp
+        vm.prank(owner);
+        vm.expectRevert(ShadowSettlement.TokenWhitelistUnchanged.selector);
+        pool.setTokenWhitelist(address(mockToken), true);
+    }
+
+    function test_SetTokenWhitelist_RevertsIfAlreadyDelisted() public {
+        address newToken = address(0x9999);
+        // newToken was never whitelisted (default false)
+        vm.prank(owner);
+        vm.expectRevert(ShadowSettlement.TokenWhitelistUnchanged.selector);
+        pool.setTokenWhitelist(newToken, false);
+    }
+
     // ===== VIEW KEY TESTS =====
 
     function test_ViewKey_GetIntentsByViewKey() public {

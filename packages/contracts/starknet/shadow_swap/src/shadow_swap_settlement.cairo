@@ -1,5 +1,25 @@
 use starknet::ContractAddress;
 
+//! # ShadowSettlement - Privacy-Preserving Cross-Chain Bridge
+//!
+//! ## Commitment Formula (enforced client-side)
+//! Frontend MUST generate commitments as:
+//!   `commitment = poseidon_hash_many([secret, nullifier, amount_low, amount_high, token, destChain])`
+//!
+//! Where:
+//! - secret, nullifier: 252-bit random values
+//! - amount_low, amount_high: u256 amount split into two u128 values
+//! - token: felt252 representation of token address
+//! - destChain: felt252 chain ID (1 = EVM, 2 = StarkNet)
+//!
+//! Security benefits:
+//! - Prevents commitment reuse across different swap parameters
+//! - Prevents cross-swap attacks
+//! - Industry standard approach (Tornado Cash, Aztec, etc.)
+//!
+//! Note: Contract does NOT validate the formula (it's a hash).
+//!       Security enforced by frontend + Merkle proof verification.
+
 // ===== STRUCTS =====
 
 /// Internal struct — never returned to external callers with viewKey
@@ -628,6 +648,8 @@ pub mod ShadowSettlement {
 
         fn set_token_whitelist(ref self: ContractState, token: ContractAddress, whitelisted: bool) {
             self._only_owner();
+            let current = self.whitelisted_tokens.entry(token).read();
+            assert!(current != whitelisted, "Token whitelist status unchanged");
             self.whitelisted_tokens.entry(token).write(whitelisted);
             self.emit(TokenWhitelistUpdated { token, whitelisted });
         }

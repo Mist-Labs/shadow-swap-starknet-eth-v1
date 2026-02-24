@@ -42,6 +42,18 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * - Batch fill level not leaked in events
  * - settleAndRelease reveals recipient but NOT linked to source commitment
  *   (same model as Tornado Cash withdrawals)
+ *
+ * COMMITMENT FORMULA (enforced client-side):
+ * Frontend MUST generate commitments as:
+ *   commitment = keccak256(abi.encodePacked(secret, nullifier, amount, token, destChain))
+ *
+ * Including amount, token, and destChain prevents:
+ * - Cross-swap attacks (same secret can't be reused for different amounts/chains)
+ * - Commitment reuse across different swap parameters
+ * - This is the industry standard (Tornado Cash, Aztec, etc.)
+ *
+ * Note: Contract does NOT validate the commitment formula (it's a hash).
+ *       Security comes from frontend generating correctly + Merkle proof verification.
  */
 contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
     using SafeERC20 for IERC20;
@@ -137,6 +149,9 @@ contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
     uint256 public constant DEFAULT_BATCH_SIZE = 10;
     uint256 public constant DEFAULT_TIMEOUT = 30;
 
+    /// @notice Sentinel address representing native ETH (industry standard)
+    address public constant ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
     // ===== EVENTS =====
 
     // --- Source side events ---
@@ -219,6 +234,8 @@ contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
     error InvalidRoot();
     error RootAlreadyVerified();
     error SnapshotNotFound();
+    error TokenWhitelistUnchanged();
+    error TransferFailed();
 
     // ===== MODIFIERS =====
 
@@ -246,13 +263,12 @@ contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
         }
     }
 
-    /// @notice Reject direct ETH — tokens arrive via NEAR bridge ERC20 transfer
-    receive() external payable {
-        revert("No direct ETH");
-    }
+    /// @notice Accept native ETH — NEAR bridge delivers ETH directly to this contract
+    receive() external payable {}
 
-    fallback() external payable {
-        revert("No direct ETH");
+    /// @notice Reject unknown calls with calldata
+    fallback() external {
+        revert("Unknown function");
     }
 
     // ==============================================================
@@ -478,7 +494,12 @@ contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
 
         usedNullifiers[nullifierHash] = true;
 
-        IERC20(token).safeTransfer(recipient, amount);
+        if (token == ETH) {
+            (bool ok, ) = payable(recipient).call{value: amount}("");
+            if (!ok) revert TransferFailed();
+        } else {
+            IERC20(token).safeTransfer(recipient, amount);
+        }
 
         emit IntentSettled(
             intentId,
@@ -715,6 +736,7 @@ contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
         address token,
         bool whitelisted
     ) external onlyOwner {
+        if (whitelistedTokens[token] == whitelisted) revert TokenWhitelistUnchanged();
         whitelistedTokens[token] = whitelisted;
         emit TokenWhitelistUpdated(token, whitelisted);
     }
@@ -733,7 +755,12 @@ contract ShadowSettlement is ReentrancyGuard, Ownable, Pausable {
         address to,
         uint256 amount
     ) external onlyOwner {
-        IERC20(token).safeTransfer(to, amount);
+        if (token == ETH) {
+            (bool ok, ) = payable(to).call{value: amount}("");
+            if (!ok) revert TransferFailed();
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
     }
 
     function pause() external onlyOwner {

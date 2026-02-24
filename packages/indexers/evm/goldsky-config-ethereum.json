@@ -1,0 +1,18 @@
+{
+  "version": "1",
+  "name": "shadowswap-ethereum",
+  "abis": {
+    "Settlement": {
+      "path": "./abis/Settlement.json"
+    }
+  },
+  "chains": ["mainnet"],
+  "instances": [
+    {
+      "abi": "Settlement",
+      "address": "0x239365b4A26d947B9CE38ec88A804F03b8248042",
+      "chain": "mainnet",
+      "startBlock": 24495772
+    }
+  ]
+}

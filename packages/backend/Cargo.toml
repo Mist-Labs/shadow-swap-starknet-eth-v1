@@ -1,8 +1,69 @@
 [package]
-name = "backend"
+name = "shadow-settlement-relayer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP/API - Actix Web
+actix-web = "4.9"
+actix-cors = "0.7"
+
+# Database - Diesel with PostgreSQL
+diesel = { version = "2.2.0", features = ["postgres", "r2d2", "chrono", "uuid", "numeric", "serde_json"] }
+diesel_migrations = { version = "2.2.0", features = ["postgres"] }
+r2d2 = "0.8"
+
+# Crypto
+secp256k1 = { version = "0.28", features = ["rand", "recovery"] }
+ecies = { version = "0.2", default-features = false, features = ["pure"] }
+sha2 = "0.10"
+sha3 = "0.10"
+hmac = "0.12.1"
+
+# EVM interaction
+ethers = { version = "2.0", features = ["legacy"] }
+
+# StarkNet interaction
+starknet = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-core = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-providers = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-signers = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-accounts = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-contract = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+starknet-crypto = { git = "https://github.com/xJonathanLEI/starknet-rs", tag = "starknet/v0.17.0" }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Environment
+dotenv = "0.15"
+
+# Utils
+num-bigint = "0.4"
+num-traits = "0.2"
+
+# Security
+zeroize = { version = "1", features = ["alloc"] }
+urlencoding = "2"
+
+[dev-dependencies]
+serial_test = "3.0"
+tempfile = "3.8"
