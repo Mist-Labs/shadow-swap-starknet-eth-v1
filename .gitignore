@@ -14,9 +14,10 @@ cache
 .claude/
 
 # Rust build artifacts
-Cargo.lock
+# Cargo.lock
 
 # Logs
 *.log
 backend.log
 backend_debug.log
+FRONTEND_INTEGRATION_GUIDE.md

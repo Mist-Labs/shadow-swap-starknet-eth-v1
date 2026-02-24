@@ -12,9 +12,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy ONLY this service
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-COPY migrations ./migrations
+COPY packages/backend/Cargo.toml packages/backend/Cargo.lock ./
+COPY packages/backend/src ./src
+COPY packages/backend/migrations ./migrations
 
 # Build
 RUN cargo build --release
