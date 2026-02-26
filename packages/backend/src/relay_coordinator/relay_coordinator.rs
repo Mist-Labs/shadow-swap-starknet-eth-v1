@@ -41,7 +41,10 @@ impl RelayCoordinator {
     }
 
     pub async fn start(&self) -> Result<()> {
-        info!("ShadowSwap relay coordinator started ({}s interval)", self.poll_interval_secs);
+        info!(
+            "ShadowSwap relay coordinator started ({}s interval)",
+            self.poll_interval_secs
+        );
 
         self.merkle_manager.load_from_store().await?;
 
@@ -88,7 +91,11 @@ impl RelayCoordinator {
     }
 
     async fn add_to_batch(&self, intent: &ShadowIntent) -> Result<()> {
-        info!("Adding intent {} to batch on {}", &intent.id[..16], intent.source_chain);
+        info!(
+            "Adding intent {} to batch on {}",
+            &intent.id[..16],
+            intent.source_chain
+        );
 
         match intent.source_chain {
             ChainId::Evm => {
@@ -115,7 +122,8 @@ impl RelayCoordinator {
             .add_commitment(intent.source_chain, &intent.commitment)
             .await?;
 
-        self.store.update_intent_status(&intent.id, IntentStatus::Batched)?;
+        self.store
+            .update_intent_status(&intent.id, IntentStatus::Batched)?;
 
         info!("Intent {} batched", &intent.id[..16]);
         Ok(())
@@ -131,7 +139,10 @@ impl RelayCoordinator {
             if intent.deposit_address.is_some() {
                 self.store
                     .update_intent_status(&intent.id, IntentStatus::NearSubmitted)?;
-                info!("Intent {} -> NearSubmitted (deposit address set)", &intent.id[..16]);
+                info!(
+                    "Intent {} -> NearSubmitted (deposit address set)",
+                    &intent.id[..16]
+                );
             }
         }
         Ok(())
@@ -143,7 +154,9 @@ impl RelayCoordinator {
     // ==============================================================
 
     async fn process_near_submitted(&self) -> Result<()> {
-        let intents = self.store.get_intents_by_status(IntentStatus::NearSubmitted)?;
+        let intents = self
+            .store
+            .get_intents_by_status(IntentStatus::NearSubmitted)?;
         for intent in intents {
             if let Err(e) = self.check_near_delivery(&intent).await {
                 warn!("NEAR check failed for {}: {}", &intent.id[..16], e);
@@ -166,6 +179,12 @@ impl RelayCoordinator {
         match result.status {
             NearSwapStatus::Success => {
                 if let Some(tx_hash) = result.destination_tx_hashes.first() {
+                    info!(
+                        "NEAR success for {} — dest_chain={} dest_tx_hash={}",
+                        &intent.id[..16],
+                        intent.dest_chain,
+                        tx_hash
+                    );
                     let verified = self.verify_delivery(intent, tx_hash).await?;
 
                     if verified {
@@ -181,15 +200,20 @@ impl RelayCoordinator {
                         warn!("Transfer verification failed for {}", &intent.id[..16]);
                     }
                 } else {
-                    warn!("NEAR SUCCESS but no destination tx hashes for {}", &intent.id[..16]);
+                    warn!(
+                        "NEAR SUCCESS but no destination tx hashes for {}",
+                        &intent.id[..16]
+                    );
                 }
             }
             NearSwapStatus::Failed => {
-                self.store.update_intent_status(&intent.id, IntentStatus::Failed)?;
+                self.store
+                    .update_intent_status(&intent.id, IntentStatus::Failed)?;
                 error!("NEAR swap failed for {}", &intent.id[..16]);
             }
             NearSwapStatus::Refunded => {
-                self.store.update_intent_status(&intent.id, IntentStatus::Refunded)?;
+                self.store
+                    .update_intent_status(&intent.id, IntentStatus::Refunded)?;
                 warn!(
                     "NEAR swap refunded for {}, reason: {:?}",
                     &intent.id[..16],
@@ -197,7 +221,10 @@ impl RelayCoordinator {
                 );
             }
             NearSwapStatus::IncompleteDeposit => {
-                warn!("Incomplete deposit for {} — user may need to top up", &intent.id[..16]);
+                warn!(
+                    "Incomplete deposit for {} — user may need to top up",
+                    &intent.id[..16]
+                );
             }
             NearSwapStatus::PendingDeposit | NearSwapStatus::Processing => {}
         }
@@ -210,11 +237,11 @@ impl RelayCoordinator {
     /// SettlementCoordinator::verify_token_delivery for both chains.
     async fn verify_delivery(&self, intent: &ShadowIntent, tx_hash: &str) -> Result<bool> {
         match intent.dest_chain {
-            ChainId::Evm => {
-                self.evm_relayer.verify_transaction_exists(tx_hash).await
-            }
+            ChainId::Evm => self.evm_relayer.verify_transaction_exists(tx_hash).await,
             ChainId::Starknet => {
-                self.starknet_relayer.verify_transaction_exists(tx_hash).await
+                self.starknet_relayer
+                    .verify_transaction_exists(tx_hash)
+                    .await
             }
         }
     }
@@ -250,8 +277,17 @@ fn near_id_to_felt(near_id: &str) -> Result<Felt> {
     }
 
     let raw = hex_str.trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(raw)
-        .map_err(|e| anyhow!("Invalid hex in NEAR ID '{}': {}", &near_id[..16.min(near_id.len())], e))?;
-    let truncated = if bytes.len() > 31 { &bytes[bytes.len() - 31..] } else { &bytes };
+    let bytes = hex::decode(raw).map_err(|e| {
+        anyhow!(
+            "Invalid hex in NEAR ID '{}': {}",
+            &near_id[..16.min(near_id.len())],
+            e
+        )
+    })?;
+    let truncated = if bytes.len() > 31 {
+        &bytes[bytes.len() - 31..]
+    } else {
+        &bytes
+    };
     Ok(Felt::from_bytes_be_slice(truncated))
 }

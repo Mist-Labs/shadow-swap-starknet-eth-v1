@@ -1,11 +1,11 @@
+use crate::models::models::{ChainId, IntentStatus, IntentStore, ShadowIntent};
+use crate::models::schema;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel::r2d2::{self, ConnectionManager, Pool};
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use tracing::info;
-use crate::models::schema;
-use crate::models::models::{ChainId, IntentStatus, IntentStore, ShadowIntent};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -51,9 +51,7 @@ impl Database {
     pub fn get_connection(
         &self,
     ) -> Result<r2d2::PooledConnection<ConnectionManager<PgConnection>>> {
-        self.pool
-            .get()
-            .context("Failed to get database connection")
+        self.pool.get().context("Failed to get database connection")
     }
 
     pub fn health_check(&self) -> Result<()> {
@@ -364,6 +362,8 @@ impl IntentStore for Database {
                 merkle_leaves::leaf.eq(leaf_val),
                 merkle_leaves::created_at.eq(Utc::now()),
             ))
+            .on_conflict((merkle_leaves::tree_name, merkle_leaves::leaf))
+            .do_nothing()
             .execute(&mut conn)
             .context("Failed to add merkle leaf")?;
 

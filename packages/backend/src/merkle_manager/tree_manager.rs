@@ -44,6 +44,11 @@ impl MerkleTreeManager {
     }
 
     pub async fn add_commitment(&self, chain: ChainId, commitment: &str) -> Result<String> {
+        info!(
+            "🌱 [ADD_COMMITMENT] chain={} commitment={}",
+            chain,
+            &commitment[..16]
+        );
         let (leaves, generator, tree_name) = match chain {
             ChainId::Evm => (&self.evm_leaves, &self.evm_generator, "evm_commitments"),
             ChainId::Starknet => (
@@ -86,7 +91,6 @@ impl MerkleTreeManager {
         };
 
         let leaves_guard = leaves.read().await;
-
         if leaves_guard.is_empty() {
             return Ok(
                 "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),

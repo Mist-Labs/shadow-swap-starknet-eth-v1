@@ -429,6 +429,7 @@ impl EvmRelayer {
 
         let transfer_topic = ethers::core::utils::keccak256("Transfer(address,address,uint256)");
 
+        // ── ERC20: look for Transfer event to settlement contract (unchanged) ──
         for log in &receipt.logs {
             if log.topics.len() < 3 {
                 continue;
@@ -446,12 +447,27 @@ impl EvmRelayer {
             let amount = U256::from_big_endian(&log.data);
 
             info!(
-                "✅ [EVM] Delivered: token={:?} amount={} to settlement contract",
+                "✅ [EVM] ERC20 delivered: token={:?} amount={} to settlement contract",
                 token_addr, amount
             );
 
-            // Return checksummed address and decimal amount string
             return Ok((format!("{:?}", token_addr), amount.to_string()));
+        }
+
+        // ── Native ETH fallback: check tx.value sent directly to settlement contract ──
+        let tx = self
+            .provider
+            .get_transaction(hash)
+            .await?
+            .ok_or_else(|| anyhow!("Transaction not found: {}", tx_hash))?;
+
+        if tx.to == Some(self.contract_address) && tx.value > U256::zero() {
+            let eth_sentinel = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE".to_string();
+            info!(
+                "✅ [EVM] Native ETH delivered: amount={} to settlement contract",
+                tx.value
+            );
+            return Ok((eth_sentinel, tx.value.to_string()));
         }
 
         Err(anyhow!(

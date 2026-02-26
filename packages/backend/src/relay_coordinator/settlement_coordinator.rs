@@ -15,7 +15,7 @@ use crate::{
     },
     models::models::{ChainId, IntentStatus, IntentStore, ShadowIntent},
     near_client::model::{NearClient, NearSwapStatus},
-    starknet::relayer::{StarkNetRelayer, u256_to_felt_pair},
+    starknet::relayer::{u256_to_felt_pair, StarkNetRelayer},
 };
 
 const RESCUE_TIMEOUT_SECS: u64 = 3600;
@@ -59,7 +59,10 @@ impl SettlementCoordinator {
     }
 
     pub async fn run(&self) -> Result<()> {
-        info!("Settlement coordinator started ({}s interval)", self.poll_interval_secs);
+        info!(
+            "Settlement coordinator started ({}s interval)",
+            self.poll_interval_secs
+        );
         loop {
             if let Err(e) = self.process_pending_settlements().await {
                 error!("Settlement processing error: {}", e);
@@ -69,7 +72,9 @@ impl SettlementCoordinator {
     }
 
     async fn process_pending_settlements(&self) -> Result<()> {
-        let pending = self.db.get_intents_by_status(IntentStatus::TokensDelivered)?;
+        let pending = self
+            .db
+            .get_intents_by_status(IntentStatus::TokensDelivered)?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -128,7 +133,8 @@ impl SettlementCoordinator {
                 "Nullifier already used for intent {} — skipping settlement",
                 &intent.id[..10]
             );
-            self.db.update_intent_status(&intent.id, IntentStatus::Failed)?;
+            self.db
+                .update_intent_status(&intent.id, IntentStatus::Failed)?;
             return Err(anyhow!("Nullifier already used — possible replay"));
         }
 
@@ -155,10 +161,12 @@ impl SettlementCoordinator {
         info!("Off-chain proof verification passed");
 
         // Step 6: Decrypt ECIES params
-        let encrypted_nullifier = intent
-            .encrypted_nullifier
-            .as_ref()
-            .ok_or_else(|| anyhow!("Missing encrypted_nullifier for intent {}", &intent.id[..10]))?;
+        let encrypted_nullifier = intent.encrypted_nullifier.as_ref().ok_or_else(|| {
+            anyhow!(
+                "Missing encrypted_nullifier for intent {}",
+                &intent.id[..10]
+            )
+        })?;
 
         let decrypted_nullifier = Zeroizing::new(
             decrypt_with_ecies(encrypted_nullifier, &self.relayer_private_key)
@@ -183,9 +191,18 @@ impl SettlementCoordinator {
             dest_tx_hash,
         )
         .await
+        .map_err(|e| {
+            error!(
+                "settle_on_destination full error for {}: {:#}",
+                &intent.id[..10],
+                e
+            );
+            e
+        })
         .context("Destination settlement failed")?;
 
-        self.db.update_intent_status(&intent.id, IntentStatus::Settled)?;
+        self.db
+            .update_intent_status(&intent.id, IntentStatus::Settled)?;
 
         // Step 8: Mark settled on source chain with retry
         self.mark_settled_with_retry(intent).await;
@@ -211,7 +228,12 @@ impl SettlementCoordinator {
                     .evm_relayer
                     .get_delivered_token_and_amount(dest_tx_hash)
                     .await
-                    .with_context(|| format!("Failed to read delivered token/amount from EVM tx {}", dest_tx_hash))?;
+                    .with_context(|| {
+                        format!(
+                            "Failed to read delivered token/amount from EVM tx {}",
+                            dest_tx_hash
+                        )
+                    })?;
 
                 info!(
                     "EVM rescue: token={} amount={} recipient={}...",
@@ -249,7 +271,12 @@ impl SettlementCoordinator {
                     .starknet_relayer
                     .get_delivered_token_and_amount(dest_tx_hash)
                     .await
-                    .with_context(|| format!("Failed to read delivered token/amount from StarkNet tx {}", dest_tx_hash))?;
+                    .with_context(|| {
+                        format!(
+                            "Failed to read delivered token/amount from StarkNet tx {}",
+                            dest_tx_hash
+                        )
+                    })?;
 
                 let recipient_felt = Felt::from_hex(recipient.as_str())
                     .map_err(|e| anyhow!("Invalid recipient hex: {}", e))?;
@@ -288,13 +315,18 @@ impl SettlementCoordinator {
         if let Err(e) = self.db.update_intent_settle_tx(&intent.id, &rescue_tx_hash) {
             warn!("Failed to record rescue tx hash: {}", e);
         }
-        self.db.update_intent_status(&intent.id, IntentStatus::Settled)?;
+        self.db
+            .update_intent_status(&intent.id, IntentStatus::Settled)?;
         self.mark_settled_with_retry(intent).await;
 
         info!(
             "Intent {} rescued on {} chain",
             &intent.id[..10],
-            if intent.dest_chain == ChainId::Evm { "EVM" } else { "StarkNet" }
+            if intent.dest_chain == ChainId::Evm {
+                "EVM"
+            } else {
+                "StarkNet"
+            }
         );
         Ok(())
     }
@@ -338,7 +370,10 @@ impl SettlementCoordinator {
                 (leaves, root)
             }
             ChainId::Starknet => {
-                let leaves = self.merkle_manager.get_leaves_snapshot(ChainId::Starknet).await;
+                let leaves = self
+                    .merkle_manager
+                    .get_leaves_snapshot(ChainId::Starknet)
+                    .await;
                 let root = self.starknet_relayer.get_merkle_root().await?;
                 (leaves, format!("0x{:064x}", root))
             }
@@ -346,15 +381,27 @@ impl SettlementCoordinator {
 
         let (proof, leaf_index, computed_root) = match intent.source_chain {
             ChainId::Evm => self.keccak_proof_gen.generate_proof(&leaves, commitment)?,
-            ChainId::Starknet => self.poseidon_proof_gen.generate_proof(&leaves, commitment)?,
+            ChainId::Starknet => self
+                .poseidon_proof_gen
+                .generate_proof(&leaves, commitment)?,
         };
 
-        info!("Proof generated: {} siblings, index {}", proof.len(), leaf_index);
+        info!(
+            "Proof generated: {} siblings, index {}",
+            proof.len(),
+            leaf_index
+        );
         info!("Expected root: {}", &root[..root.len().min(18)]);
-        info!("Computed root: {}", &computed_root[..computed_root.len().min(18)]);
+        info!(
+            "Computed root: {}",
+            &computed_root[..computed_root.len().min(18)]
+        );
 
         if computed_root.to_lowercase() != root.to_lowercase() {
-            error!("Root mismatch! Expected: {}, Computed: {}", root, computed_root);
+            error!(
+                "Root mismatch! Expected: {}, Computed: {}",
+                root, computed_root
+            );
             return Ok(false);
         }
 
@@ -381,13 +428,20 @@ impl SettlementCoordinator {
     // ==============================================================
 
     async fn verify_token_delivery(&self, intent: &ShadowIntent, tx_hash: &str) -> Result<bool> {
-        info!("Verifying token delivery: {}", &tx_hash[..18.min(tx_hash.len())]);
+        info!(
+            "Verifying token delivery: {}",
+            &tx_hash[..18.min(tx_hash.len())]
+        );
 
         match intent.dest_chain {
             ChainId::Evm => {
                 // get_delivered_token_and_amount reads the Transfer event to the
                 // settlement contract — if it succeeds, delivery is verified.
-                match self.evm_relayer.get_delivered_token_and_amount(tx_hash).await {
+                match self
+                    .evm_relayer
+                    .get_delivered_token_and_amount(tx_hash)
+                    .await
+                {
                     Ok(_) => Ok(true),
                     Err(e) => {
                         warn!(
@@ -411,10 +465,14 @@ impl SettlementCoordinator {
         use starknet::core::types::{Felt, TransactionReceipt};
         use starknet::core::utils::get_selector_from_name;
 
-        let tx_hash_felt = Felt::from_hex(tx_hash)
-            .map_err(|e| anyhow!("Invalid StarkNet tx hash: {}", e))?;
+        let tx_hash_felt =
+            Felt::from_hex(tx_hash).map_err(|e| anyhow!("Invalid StarkNet tx hash: {}", e))?;
 
-        let receipt = match self.starknet_relayer.wait_for_transaction(tx_hash_felt).await {
+        let receipt = match self
+            .starknet_relayer
+            .wait_for_transaction(tx_hash_felt)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 warn!("StarkNet transfer verification failed: {}", e);
@@ -485,7 +543,12 @@ impl SettlementCoordinator {
                     .evm_relayer
                     .get_delivered_token_and_amount(dest_tx_hash)
                     .await
-                    .with_context(|| format!("Failed to read delivered token/amount from EVM tx {}", dest_tx_hash))?;
+                    .with_context(|| {
+                        format!(
+                            "Failed to read delivered token/amount from EVM tx {}",
+                            dest_tx_hash
+                        )
+                    })?;
 
                 info!(
                     "settle_and_release EVM: token={} amount={} (source intent: token={} amount={})",
@@ -513,7 +576,12 @@ impl SettlementCoordinator {
                     .starknet_relayer
                     .get_delivered_token_and_amount(dest_tx_hash)
                     .await
-                    .with_context(|| format!("Failed to read delivered token/amount from StarkNet tx {}", dest_tx_hash))?;
+                    .with_context(|| {
+                        format!(
+                            "Failed to read delivered token/amount from StarkNet tx {}",
+                            dest_tx_hash
+                        )
+                    })?;
 
                 info!(
                     "settle_and_release StarkNet: token={} amount={} (source intent: token={} amount={})",
@@ -558,7 +626,10 @@ impl SettlementCoordinator {
                 Err(e) => {
                     warn!(
                         "mark_settled attempt {}/{} failed for {}: {}",
-                        attempt, self.mark_settled_max_retries, &intent.id[..10], e
+                        attempt,
+                        self.mark_settled_max_retries,
+                        &intent.id[..10],
+                        e
                     );
                     if attempt < self.mark_settled_max_retries {
                         sleep(Duration::from_secs(5 * attempt as u64)).await;
