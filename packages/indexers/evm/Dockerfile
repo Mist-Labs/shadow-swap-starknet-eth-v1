@@ -2,22 +2,16 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json ./
-COPY tsconfig.json ./
+COPY packages/indexers/evm/package.json packages/indexers/evm/package-lock.json ./
+COPY packages/indexers/evm/tsconfig.json ./
 
-# Install dependencies
-RUN npm install
+RUN npm ci
 
-# Copy source code
-COPY src ./src
-COPY abis ./abis
+COPY packages/indexers/evm/src ./src
+COPY packages/indexers/evm/abis ./abis
 
-# Build TypeScript
 RUN npm run build
 
-# Expose port
 EXPOSE 3000
 
-# Start server
 CMD ["npm", "start"]

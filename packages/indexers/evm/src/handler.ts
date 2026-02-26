@@ -1,8 +1,4 @@
-import {
-  GoldskyWebhookPayload,
-  RelayerEventPayload,
-  EventType,
-} from "./types";
+import { GoldskyWebhookPayload, RelayerEventPayload, EventType } from "./types";
 import { deriveChainId, normalizeHex } from "./utils";
 
 /**
@@ -13,13 +9,19 @@ function parseEventData(eventData: any, entity: string): Record<string, any> {
     case "commitment_added":
       return {
         commitment: normalizeHex(eventData.commitment),
-        intentId: eventData.intent_id ? normalizeHex(eventData.intent_id) : undefined,
+        intentId: eventData.intent_id
+          ? normalizeHex(eventData.intent_id)
+          : undefined,
       };
 
     case "intent_settled":
       return {
-        intentId: eventData.intent_id ? normalizeHex(eventData.intent_id) : undefined,
-        nullifierHash: normalizeHex(eventData.nullifier_hash || eventData.nullifierHash),
+        intentId: eventData.intent_id
+          ? normalizeHex(eventData.intent_id)
+          : undefined,
+        nullifierHash: normalizeHex(
+          eventData.nullifier_hash || eventData.nullifierHash,
+        ),
         token: normalizeHex(eventData.token),
         recipient: normalizeHex(eventData.recipient),
         amount: eventData.amount,
@@ -28,7 +30,9 @@ function parseEventData(eventData: any, entity: string): Record<string, any> {
     case "intent_marked_settled":
       return {
         commitment: normalizeHex(eventData.commitment),
-        nullifierHash: normalizeHex(eventData.nullifier_hash || eventData.nullifierHash),
+        nullifierHash: normalizeHex(
+          eventData.nullifier_hash || eventData.nullifierHash,
+        ),
       };
 
     case "merkle_root_updated":
@@ -52,7 +56,7 @@ function parseEventData(eventData: any, entity: string): Record<string, any> {
  * Transform Goldsky webhook payload to relayer format
  */
 export async function transformGoldskyPayload(
-  payload: GoldskyWebhookPayload
+  payload: GoldskyWebhookPayload,
 ): Promise<RelayerEventPayload> {
   const { entity, data } = payload;
   const eventData = data.new;
@@ -61,10 +65,19 @@ export async function transformGoldskyPayload(
 
   return {
     event_name: entity as EventType,
-    chain: chainId === "1" || chainId === "ethereum" ? "ethereum" : "sepolia",
+    chain:
+      chainId === "1" || chainId === "ethereum"
+        ? "ethereum"
+        : chainId === "11155111" || chainId === "sepolia"
+          ? "sepolia"
+          : (() => {
+              throw new Error(`Unsupported chain: ${chainId}`);
+            })(),
     transaction_hash: eventData.transaction_hash,
     block_number: parseInt(eventData.block_number),
-    log_index: parseInt(eventData.log_index || eventData.id?.split("-")[1] || "0"),
+    log_index: parseInt(
+      eventData.log_index || eventData.id?.split("-")[1] || "0",
+    ),
     event_data: parseEventData(eventData, entity),
   };
 }
