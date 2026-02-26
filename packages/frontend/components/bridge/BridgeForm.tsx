@@ -20,8 +20,8 @@ import { SUPPORTED_TOKENS, getTokenInfo } from "@/lib/tokens"
 
 // Supported networks
 const NETWORKS = [
-    { id: 11155111, name: "Ethereum Sepolia", symbol: "ETH", logo: "Ξ", chain: "ethereum" as const },
-    { id: 99999999, name: "Starknet Sepolia", symbol: "ETH", logo: "S", chain: "starknet" as const }, // Mock ID for Starknet
+    { id: 1, name: "Ethereum", symbol: "ETH", logo: "Ξ", chain: "ethereum" as const },
+    { id: 2, name: "Starknet", symbol: "ETH", logo: "S", chain: "starknet" as const }, // Mock ID for Starknet UI
 ]
 
 export default function BridgeForm() {
@@ -114,7 +114,7 @@ export default function BridgeForm() {
     // Get balance for current network
     const { data: balanceData } = useBalance({
         address: address,
-        chainId: fromNetwork.id !== 99999999 ? fromNetwork.id : undefined, // Only fetch for EVM for now via wagmi
+        chainId: fromNetwork.id !== 2 ? fromNetwork.id : undefined, // Only fetch for EVM for now via wagmi
     })
 
     // Calculate fees and amounts
@@ -182,6 +182,7 @@ export default function BridgeForm() {
                 tokenSymbol: selectedToken,
                 amount,
                 recipient: destination as Address,
+                walletAddress: address as Address,
             })
 
             // Reset form after successful bridge trigger

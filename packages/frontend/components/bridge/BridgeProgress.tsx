@@ -52,6 +52,11 @@ const STEP_MAP: Record<
         description: "Creating commitment and secrets...",
         icon: Shield,
     },
+    "fetching-quote": {
+        title: "Fetching Quote",
+        description: "Retrieving cross-chain swap path...",
+        icon: Shield,
+    },
     "signing-auth": {
         title: "Sign Authorization",
         description: "Sign to authorize auto-claim...",

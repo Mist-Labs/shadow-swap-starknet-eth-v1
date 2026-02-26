@@ -65,9 +65,13 @@ export interface BridgeInitiateRequest {
   commitment: string;
   encrypted_secret: string; // ECIES encrypted secret
   encrypted_nullifier: string; // ECIES encrypted nullifier
+  nullifier_hash: string;
   claim_auth: string;
-  recipient: string;
+  encrypted_recipient: string; // ECIES UTF-8 string
   refund_address: string;
+  near_intents_id: string; // UUID from correlationId
+  view_key: string;
+  deposit_address: string;
 }
 
 /**
@@ -181,85 +185,6 @@ export interface PriceResponse {
 }
 
 /**
- * Generate HMAC signature for API requests
- * Uses Web Crypto API (browser-compatible)
- *
- * @param payload - Request body object
- * @param timestamp - Unix timestamp in seconds
- * @returns Promise<string> - Hex signature
- */
-async function generateHMACSignature(
-  payload: Record<string, unknown>,
-  timestamp: string
-): Promise<string> {
-  if (!HMAC_SECRET) {
-    throw new Error(
-      "HMAC secret not configured. Please set NEXT_PUBLIC_HMAC_SECRET environment variable."
-    );
-  }
-
-  const requestBody = JSON.stringify(payload);
-  const message = timestamp + requestBody;
-
-  // Convert secret and message to Uint8Array
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(HMAC_SECRET);
-  const messageData = encoder.encode(message);
-
-  // Import key for HMAC
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyData,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  // Sign the message
-  const signature = await crypto.subtle.sign("HMAC", key, messageData);
-
-  // Convert to hex string
-  const hashArray = Array.from(new Uint8Array(signature));
-  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-
-  return hashHex;
-}
-
-/**
- * Make authenticated API request with HMAC signature
- *
- * @param endpoint - API endpoint path
- * @param options - Fetch options
- * @returns Promise<Response>
- */
-async function authenticatedFetch(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<Response> {
-  const url = `${API_BASE_URL}${endpoint}`;
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-
-  let body: Record<string, unknown> = {};
-  if (options.body) {
-    body = JSON.parse(options.body as string);
-  }
-
-  const signature = await generateHMACSignature(body, timestamp);
-
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    "X-Signature": signature,
-    "X-Timestamp": timestamp,
-    ...((options.headers as Record<string, string>) || {}),
-  };
-
-  return fetch(url, {
-    ...options,
-    headers,
-  });
-}
-
-/**
  * Initiate a bridge transaction
  *
  * @param request - Bridge initiation request
@@ -270,8 +195,9 @@ export async function initiateBridge(
 ): Promise<BridgeInitiateResponse> {
   return retryAPICall(async () => {
     try {
-      const response = await authenticatedFetch("/bridge/initiate", {
+      const response = await fetch("/api/bridge", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       });
 
