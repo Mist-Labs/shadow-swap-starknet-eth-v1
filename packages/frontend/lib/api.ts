@@ -33,9 +33,7 @@ import {
 /**
  * API Configuration
  */
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "https://international-linnie-mist-labs-2c5cd590.koyeb.app/api/v1";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
 const HMAC_SECRET = process.env.NEXT_PUBLIC_HMAC_SECRET || "";
 
