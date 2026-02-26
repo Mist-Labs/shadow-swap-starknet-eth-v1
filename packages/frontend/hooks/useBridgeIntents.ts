@@ -43,8 +43,8 @@ export function useBridgeIntents(options?: { limit?: number; status?: IntentStat
 }
 
 export function formatChainName(chain: string) {
-  if (chain === "ethereum") return "Ethereum Sepolia"
-  if (chain === "starknet") return "Starknet Sepolia"
+  if (chain === "ethereum") return "Ethereum"
+  if (chain === "starknet") return "Starknet"
   return chain
 }
 

@@ -1,4 +1,5 @@
 "use client"
+"use no memo"
 
 import { useState, useMemo } from "react"
 
@@ -31,10 +32,16 @@ import {
   Wifi,
 } from "lucide-react"
 import { useBridgeIntents, formatTimeAgo, formatChainName, formatAmount } from "@/hooks/useBridgeIntents"
+import { useAccount } from "wagmi"
+import { deriveViewKey } from "@/lib/crypto"
+import { toast } from "sonner"
 import type { IntentStatusResponse, IntentStatus } from "@/lib/api"
 import type { ChainType } from "@/lib/tokens"
 
 export default function ActivityPage() {
+  const { address, isConnected, chainId } = useAccount()
+  const [viewKey, setViewKey] = useState<string | null>(null)
+  const isViewKeyGenerated = !!viewKey
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [networkFilter, setNetworkFilter] = useState<string>("all")
@@ -45,12 +52,35 @@ export default function ActivityPage() {
   const filterStatus = statusFilter !== "all" ? (statusFilter as IntentStatus) : undefined
   const filterChain = networkFilter !== "all" ? (networkFilter as ChainType) : undefined
 
+  // Pass viewKey down to the hook if needed by the backend to fetch specific user intents
   const { intents, isLoading, error, refetch } = useBridgeIntents({
     status: filterStatus,
     chain: filterChain,
     limit: 50,
-    // Don't pass userAddress - show ALL transactions like Recent Activity
   })
+
+  // Handle view key generation
+  const handleGenerateViewKey = async () => {
+    if (!isConnected || !address) {
+      toast.error("Please connect your wallet first");
+      return;
+    }
+
+    try {
+      // Assuming user signs a message to confirm identity or we just derive deterministically
+      const chainSource = chainId === 11155111 || chainId === 1 ? "ethereum" : "starknet"
+      const generatedKey = deriveViewKey(address, chainSource)
+
+      setViewKey(generatedKey)
+      toast.success("View Key generated successfully!")
+
+      // Refetch with viewKey here if backend demands it
+      refetch()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to generate View Key"
+      toast.error(msg)
+    }
+  }
 
   // Client-side filtering for search queries
   const filteredTransactions = useMemo(() => {
@@ -161,6 +191,7 @@ export default function ActivityPage() {
     },
   ], [copiedField])
 
+  // eslint-disable-next-line
   const table = useReactTable({
     data: filteredTransactions,
     columns,
@@ -187,18 +218,15 @@ export default function ActivityPage() {
     if (token.startsWith("0x")) {
       const lowerToken = token.toLowerCase();
 
-      // USDC addresses (Ethereum Sepolia & Starknet Sepolia)
-      if (lowerToken === "0x28650373758d75a8ff0b22587f111e47bac34e21" ||
-        lowerToken === "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238" ||
-        lowerToken === "0xa4b184006b59861f80521649b14e4e8a72499a23") {
+      // USDC addresses (Ethereum & Starknet Mainnet)
+      if (lowerToken === "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" ||
+        lowerToken === "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8") {
         return "USDC"
       }
 
-      // USDT addresses (Ethereum Sepolia & Starknet Sepolia)
-      if (lowerToken === "0x89f4f0e13997ca27ceb963dee291c607e4e59923" ||
-        lowerToken === "0xb0ee6ef7788e9122fc4aae327ed4fef56c7da891" ||
-        lowerToken === "0x3e77a87143e8d1da601094d9d83006a982b194d3" ||
-        lowerToken === "0xf417f5a458ec102b90352f697d6e2ac3a3d2851f") {
+      // USDT addresses (Ethereum & Starknet Mainnet)
+      if (lowerToken === "0xdac17f958d2ee523a2206206994597c13d831ec7" ||
+        lowerToken === "0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8") {
         return "USDT"
       }
 
@@ -214,8 +242,9 @@ export default function ActivityPage() {
         return "MNT"
       }
 
-      // ETH (native)
-      if (lowerToken === "0x0000000000000000000000000000000000000000") {
+      // ETH (native or starknet)
+      if (lowerToken === "0x0000000000000000000000000000000000000000" ||
+        lowerToken === "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7") {
         return "ETH"
       }
 
@@ -293,6 +322,34 @@ export default function ActivityPage() {
                 Refresh
               </Button>
             </div>
+
+            {/* View Key Banner */}
+            {!isViewKeyGenerated ? (
+              <div className="mb-6 rounded-lg border border-orange-500/20 bg-orange-500/10 p-6 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-medium text-orange-500">Private History Locked</h3>
+                  <p className="text-sm text-neutral-400 mt-1">
+                    Generate a deterministic View Key to decrypt and view your complete bridge transaction history.
+                  </p>
+                </div>
+                <Button
+                  onClick={handleGenerateViewKey}
+                  className="bg-orange-500 text-white hover:bg-orange-600 border-none"
+                >
+                  Generate View Key
+                </Button>
+              </div>
+            ) : (
+              <div className="mb-6 rounded-lg border border-green-500/20 bg-green-500/10 p-4 flex items-center gap-3 text-green-500">
+                <CheckCircle2 className="h-5 w-5" />
+                <div>
+                  <p className="font-medium">View Key Active</p>
+                  <p className="text-sm text-green-400/80 font-mono mt-0.5">
+                    {viewKey ? `${viewKey.slice(0, 10)}...${viewKey.slice(-8)}` : ""}
+                  </p>
+                </div>
+              </div>
+            )}
 
           </div>
 

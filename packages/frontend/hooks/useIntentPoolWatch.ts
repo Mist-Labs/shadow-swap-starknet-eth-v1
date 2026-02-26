@@ -18,9 +18,9 @@ export function useIntentPoolWatch() {
   const chainId = useChainId()
 
   // Determine which Intent Pool to watch based on connected chain
-  const intentPoolAddress = chainId === 11155111
+  const intentPoolAddress = chainId === 1
     ? ETHEREUM_CONTRACTS.intentPool
-    : chainId === 99999999 // Mock ID for Starknet Sepolia
+    : chainId === 2 // Mock ID for Starknet UI
     ? STARKNET_CONTRACTS.intentPool
     : undefined
 
@@ -50,11 +50,11 @@ export function useIntentPoolWatch() {
       })
     },
     // Poll every block for new events
-    pollingInterval: chainId === 99999999 ? 3000 : 12000, // Starknet ~3s, Ethereum ~12s
+    pollingInterval: chainId === 2 ? 3000 : 12000, // Starknet ~3s, Ethereum ~12s
   })
 
   return {
-    watchingChain: chainId === 11155111 ? 'ethereum' : chainId === 99999999 ? 'starknet' : 'unknown',
+    watchingChain: chainId === 1 ? 'ethereum' : chainId === 2 ? 'starknet' : 'unknown',
     isWatching: !!intentPoolAddress,
   }
 }
