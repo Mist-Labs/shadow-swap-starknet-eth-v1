@@ -3,8 +3,81 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Menu, X } from "lucide-react"
-import { DynamicWidget } from "@dynamic-labs/sdk-react-core"
+import { Menu, X, Wallet } from "lucide-react"
+import { useAppKit, useAppKitAccount } from "@reown/appkit/react"
+import {
+    useAccount as useStarknetAccount,
+    useConnect,
+    useDisconnect,
+} from "@starknet-react/core"
+import { useStarknetkitConnectModal } from "starknetkit"
+import type { StarknetkitConnector } from "starknetkit"
+import type { Connector } from "@starknet-react/core"
+import { Button } from "@/components/ui/button"
+
+function shortenAddress(addr: string) {
+    return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+/** EVM wallet button powered by Reown AppKit */
+function EvmWalletButton() {
+    const { open } = useAppKit()
+    const { address, isConnected } = useAppKitAccount()
+
+    return (
+        <Button
+            onClick={() => open()}
+            size="sm"
+            className={
+                isConnected
+                    ? "border border-orange-500/40 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20"
+                    : "border border-orange-500 bg-orange-500 text-white hover:bg-orange-600"
+            }
+        >
+            <Wallet className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+            {isConnected && address ? (
+                <span className="hidden sm:inline">{shortenAddress(address)}</span>
+            ) : (
+                <span>EVM Wallet</span>
+            )}
+        </Button>
+    )
+}
+
+/** Starknet wallet button powered by StarknetKit */
+function StarknetWalletButton() {
+    const { address, isConnected } = useStarknetAccount()
+    const { connect, connectors } = useConnect()
+    const { disconnect } = useDisconnect()
+    const { starknetkitConnectModal } = useStarknetkitConnectModal({
+        connectors: connectors as StarknetkitConnector[],
+    })
+
+    const handleConnect = async () => {
+        const { connector } = await starknetkitConnectModal()
+        if (!connector) return
+        await connect({ connector: connector as Connector })
+    }
+
+    return (
+        <Button
+            onClick={isConnected ? () => disconnect() : handleConnect}
+            size="sm"
+            className={
+                isConnected
+                    ? "border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                    : "border border-amber-500/70 bg-neutral-800 text-amber-400 hover:border-amber-500 hover:bg-neutral-700"
+            }
+        >
+            <Wallet className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+            {isConnected && address ? (
+                <span className="hidden sm:inline">{shortenAddress(address)}</span>
+            ) : (
+                <span>Starknet Wallet</span>
+            )}
+        </Button>
+    )
+}
 
 export default function Header() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -34,8 +107,7 @@ export default function Header() {
                             <Link
                                 key={item.name}
                                 href={item.href}
-                                className={`text-sm transition-colors ${isActive(item.href) ? "font-semibold text-orange-500" : "text-neutral-400 hover:text-white"
-                                    }`}
+                                className={`text-sm transition-colors ${isActive(item.href) ? "font-semibold text-orange-500" : "text-neutral-400 hover:text-white"}`}
                             >
                                 {item.name.toUpperCase()}
                             </Link>
@@ -43,13 +115,13 @@ export default function Header() {
                     </nav>
                 </div>
 
-                <div className="flex items-center gap-3">
-                    {/* Dynamic Widget handles Wallet Connection AND Network Switching */}
-                    <DynamicWidget />
+                <div className="flex items-center gap-2">
+                    <EvmWalletButton />
+                    <StarknetWalletButton />
 
                     {/* Mobile Menu */}
                     <button
-                        className="text-neutral-400 hover:text-white md:hidden"
+                        className="ml-1 text-neutral-400 hover:text-white md:hidden"
                         onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
                     >
                         {mobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
@@ -66,10 +138,7 @@ export default function Header() {
                                 key={item.name}
                                 href={item.href}
                                 onClick={() => setMobileMenuOpen(false)}
-                                className={`rounded px-3 py-2 text-left transition-colors ${isActive(item.href)
-                                        ? "bg-orange-500 text-white"
-                                        : "text-neutral-400 hover:bg-neutral-800 hover:text-white"
-                                    }`}
+                                className={`rounded px-3 py-2 text-left transition-colors ${isActive(item.href) ? "bg-orange-500 text-white" : "text-neutral-400 hover:bg-neutral-800 hover:text-white"}`}
                             >
                                 {item.name.toUpperCase()}
                             </Link>

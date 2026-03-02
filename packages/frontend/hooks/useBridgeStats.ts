@@ -62,13 +62,13 @@ export function useBridgeStats(refreshInterval: number = 30000) {
       setState({
         totalIntents: response.data.total_intents,
         pendingIntents: response.data.pending_intents,
-        filledIntents: response.data.filled_intents,
-        completedIntents: response.data.completed_intents,
+        filledIntents: response.data.filled_intents ?? response.data.settled_intents ?? 0,
+        completedIntents: response.data.completed_intents ?? response.data.settled_intents ?? 0,
         failedIntents: response.data.failed_intents,
         refundedIntents: response.data.refunded_intents,
-        ethereumToStarknet: response.data.ethereum_to_starknet,
-        starknetToEthereum: response.data.starknet_to_ethereum,
-        volumeByToken: response.data.total_volume_by_token,
+        ethereumToStarknet: response.data.ethereum_to_starknet ?? 0,
+        starknetToEthereum: response.data.starknet_to_ethereum ?? 0,
+        volumeByToken: response.data.total_volume_by_token ?? {},
         isLoading: false,
         error: null,
       });
@@ -122,7 +122,7 @@ export function useHealthCheck(refreshInterval: number = 15000) {
       setState({
         status: response.status,
         timestamp: response.timestamp,
-        components: response.components,
+        components: response.components ?? {},
         isLoading: false,
         error: null,
       });

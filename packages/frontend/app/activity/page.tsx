@@ -30,17 +30,22 @@ import {
   RefreshCw,
   AlertCircle,
   Wifi,
+  Key,
 } from "lucide-react"
 import { useBridgeIntents, formatTimeAgo, formatChainName, formatAmount } from "@/hooks/useBridgeIntents"
 import { useAccount } from "wagmi"
+import { useAccount as useStarknetAccount } from "@starknet-react/core"
 import { deriveViewKey } from "@/lib/crypto"
 import { toast } from "sonner"
 import type { IntentStatusResponse, IntentStatus } from "@/lib/api"
 import type { ChainType } from "@/lib/tokens"
 
 export default function ActivityPage() {
-  const { address, isConnected, chainId } = useAccount()
+  const { address: evmAddress, isConnected: isEvmConnected } = useAccount()
+  const { address: starknetAddress, isConnected: isStarknetConnected } = useStarknetAccount()
+
   const [viewKey, setViewKey] = useState<string | null>(null)
+  const [viewKeyCopied, setViewKeyCopied] = useState(false)
   const isViewKeyGenerated = !!viewKey
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
@@ -48,34 +53,43 @@ export default function ActivityPage() {
   const [selectedTx, setSelectedTx] = useState<IntentStatusResponse | null>(null)
   const [copiedField, setCopiedField] = useState<string | null>(null)
 
-  // Fetch bridge intents with filters
+  // Fetch bridge intents — when viewKey is present, filter by it
   const filterStatus = statusFilter !== "all" ? (statusFilter as IntentStatus) : undefined
   const filterChain = networkFilter !== "all" ? (networkFilter as ChainType) : undefined
 
-  // Pass viewKey down to the hook if needed by the backend to fetch specific user intents
   const { intents, isLoading, error, refetch } = useBridgeIntents({
     status: filterStatus,
     chain: filterChain,
     limit: 50,
+    viewKey: viewKey ?? undefined,
   })
 
-  // Handle view key generation
+  // Copy the view key to clipboard
+  const copyViewKey = () => {
+    if (!viewKey) return
+    navigator.clipboard.writeText(viewKey)
+    setViewKeyCopied(true)
+    setTimeout(() => setViewKeyCopied(false), 2000)
+  }
+
+  // Generate deterministic view key from connected wallet
+  // Supports both EVM (Reown/wagmi) and Starknet (StarknetKit)
   const handleGenerateViewKey = async () => {
+    // Try EVM wallet first, then Starknet
+    const address = evmAddress || (starknetAddress as string | undefined)
+    const chainSource: ChainType = evmAddress ? "ethereum" : "starknet"
+    const isConnected = isEvmConnected || isStarknetConnected
+
     if (!isConnected || !address) {
-      toast.error("Please connect your wallet first");
-      return;
+      toast.error("Please connect your EVM or Starknet wallet first")
+      return
     }
 
     try {
-      // Assuming user signs a message to confirm identity or we just derive deterministically
-      const chainSource = chainId === 11155111 || chainId === 1 ? "ethereum" : "starknet"
       const generatedKey = deriveViewKey(address, chainSource)
-
       setViewKey(generatedKey)
-      toast.success("View Key generated successfully!")
-
-      // Refetch with viewKey here if backend demands it
-      refetch()
+      toast.success("View Key generated — your transaction history is now visible")
+      // React Query will re-run the query because viewKey changed in the query key
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to generate View Key"
       toast.error(msg)
@@ -325,29 +339,51 @@ export default function ActivityPage() {
 
             {/* View Key Banner */}
             {!isViewKeyGenerated ? (
-              <div className="mb-6 rounded-lg border border-orange-500/20 bg-orange-500/10 p-6 flex items-center justify-between">
+              <div className="mb-6 rounded-lg border border-orange-500/20 bg-orange-500/10 p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-lg font-medium text-orange-500">Private History Locked</h3>
+                  <h3 className="text-lg font-medium text-orange-500 flex items-center gap-2">
+                    <Key className="h-4 w-4" />
+                    Private History Locked
+                  </h3>
                   <p className="text-sm text-neutral-400 mt-1">
-                    Generate a deterministic View Key to decrypt and view your complete bridge transaction history.
+                    Generate a deterministic View Key from your wallet to decrypt and view your
+                    bridge transaction history. Connect either your EVM or Starknet wallet.
                   </p>
+                  {!isEvmConnected && !isStarknetConnected && (
+                    <p className="text-xs text-orange-400 mt-2">⚠ No wallet connected — connect a wallet first</p>
+                  )}
                 </div>
                 <Button
                   onClick={handleGenerateViewKey}
-                  className="bg-orange-500 text-white hover:bg-orange-600 border-none"
+                  disabled={!isEvmConnected && !isStarknetConnected}
+                  className="bg-orange-500 text-white hover:bg-orange-600 border-none shrink-0"
                 >
+                  <Key className="mr-2 h-4 w-4" />
                   Generate View Key
                 </Button>
               </div>
             ) : (
-              <div className="mb-6 rounded-lg border border-green-500/20 bg-green-500/10 p-4 flex items-center gap-3 text-green-500">
-                <CheckCircle2 className="h-5 w-5" />
-                <div>
-                  <p className="font-medium">View Key Active</p>
-                  <p className="text-sm text-green-400/80 font-mono mt-0.5">
-                    {viewKey ? `${viewKey.slice(0, 10)}...${viewKey.slice(-8)}` : ""}
-                  </p>
+              <div className="mb-6 rounded-lg border border-green-500/20 bg-green-500/10 p-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 text-green-500 min-w-0">
+                  <CheckCircle2 className="h-5 w-5 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="font-medium">View Key Active</p>
+                    <p className="text-sm text-green-400/80 font-mono mt-0.5 truncate">
+                      {viewKey ? `${viewKey.slice(0, 14)}...${viewKey.slice(-8)}` : ""}
+                    </p>
+                  </div>
                 </div>
+                <button
+                  onClick={copyViewKey}
+                  title="Copy view key"
+                  className="shrink-0 text-green-400 hover:text-green-300 transition-colors"
+                >
+                  {viewKeyCopied ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </button>
               </div>
             )}
 
@@ -359,7 +395,9 @@ export default function ActivityPage() {
               <AlertCircle className="h-5 w-5" />
               <div>
                 <p className="font-medium">Error loading transactions</p>
-                <p className="text-sm text-red-400">{error}</p>
+                <p className="text-sm text-red-400">
+                  {error instanceof Error ? error.message : "Unable to reach the backend. Please try again."}
+                </p>
               </div>
             </div>
           )}
@@ -442,8 +480,26 @@ export default function ActivityPage() {
                   </TableRow>
                 ) : table.getRowModel().rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={columns.length} className="py-12 text-center text-neutral-500">
-                      No transactions found
+                    <TableCell colSpan={columns.length} className="py-16 text-center">
+                      <div className="flex flex-col items-center gap-3 text-neutral-500">
+                        <div className="rounded-full border border-neutral-700 bg-neutral-800 p-4">
+                          <svg className="h-8 w-8 text-neutral-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className="font-medium text-neutral-400">
+                            {searchQuery || statusFilter !== "all" || networkFilter !== "all"
+                              ? "No transactions match your filters"
+                              : "No transactions yet"}
+                          </p>
+                          <p className="mt-1 text-sm">
+                            {searchQuery || statusFilter !== "all" || networkFilter !== "all"
+                              ? "Try adjusting your search or filters"
+                              : "Bridge your first transaction to see activity here"}
+                          </p>
+                        </div>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -554,11 +610,11 @@ export default function ActivityPage() {
                 </div>
               )}
 
-              {/* Deadline */}
+              {/* Deadline — not provided by backend; show updated_at instead */}
               <div className="flex items-center justify-between">
-                <span className="text-neutral-400">Deadline</span>
+                <span className="text-neutral-400">Last Updated</span>
                 <span className="text-white">
-                  {new Date(selectedTx.deadline * 1000).toLocaleString()}
+                  {new Date(selectedTx.updated_at * 1000).toLocaleString()}
                 </span>
               </div>
 
@@ -566,7 +622,7 @@ export default function ActivityPage() {
               <div className="flex items-center justify-between">
                 <span className="text-neutral-400">Created</span>
                 <span className="text-white">
-                  {new Date(selectedTx.created_at).toLocaleString()}
+                  {new Date(selectedTx.created_at * 1000).toLocaleString()}
                 </span>
               </div>
 
@@ -607,13 +663,13 @@ export default function ActivityPage() {
               </div>
 
               {/* Transaction Hashes */}
-              {selectedTx.dest_fill_txid && (
+              {selectedTx.dest_tx_hash && (
                 <div>
-                  <div className="mb-2 text-neutral-400">Fill Transaction</div>
+                  <div className="mb-2 text-neutral-400">Destination Transaction</div>
                   <div className="flex items-center gap-2 rounded border border-neutral-700 bg-neutral-800 p-3">
-                    <span className="flex-1 truncate font-mono text-sm text-white">{selectedTx.dest_fill_txid}</span>
+                    <span className="flex-1 truncate font-mono text-sm text-white">{selectedTx.dest_tx_hash}</span>
                     <button
-                      onClick={() => copyToClipboard(selectedTx.dest_fill_txid!, "modal-fill")}
+                      onClick={() => copyToClipboard(selectedTx.dest_tx_hash!, "modal-fill")}
                       className="text-neutral-500 transition-colors hover:text-orange-500"
                     >
                       {copiedField === "modal-fill" ? (
@@ -626,7 +682,7 @@ export default function ActivityPage() {
                       href={`${selectedTx.dest_chain === "ethereum"
                         ? process.env.NEXT_PUBLIC_ETHEREUM_EXPLORER
                         : process.env.NEXT_PUBLIC_STARKNET_EXPLORER
-                        }/tx/${selectedTx.dest_fill_txid}`}
+                        }/tx/${selectedTx.dest_tx_hash}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-neutral-500 transition-colors hover:text-orange-500"
@@ -637,18 +693,18 @@ export default function ActivityPage() {
                 </div>
               )}
 
-              {selectedTx.source_complete_txid && (
+              {selectedTx.settle_tx_hash && (
                 <div>
-                  <div className="mb-2 text-neutral-400">Complete Transaction</div>
+                  <div className="mb-2 text-neutral-400">Settlement Transaction</div>
                   <div className="flex items-center gap-2 rounded border border-neutral-700 bg-neutral-800 p-3">
                     <span className="flex-1 truncate font-mono text-sm text-white">
-                      {selectedTx.source_complete_txid}
+                      {selectedTx.settle_tx_hash}
                     </span>
                     <button
-                      onClick={() => copyToClipboard(selectedTx.source_complete_txid!, "modal-complete")}
+                      onClick={() => copyToClipboard(selectedTx.settle_tx_hash!, "modal-settle")}
                       className="text-neutral-500 transition-colors hover:text-orange-500"
                     >
-                      {copiedField === "modal-complete" ? (
+                      {copiedField === "modal-settle" ? (
                         <Check className="h-4 w-4 text-green-500" />
                       ) : (
                         <Copy className="h-4 w-4" />
@@ -658,7 +714,39 @@ export default function ActivityPage() {
                       href={`${selectedTx.source_chain === "ethereum"
                         ? process.env.NEXT_PUBLIC_ETHEREUM_EXPLORER
                         : process.env.NEXT_PUBLIC_STARKNET_EXPLORER
-                        }/tx/${selectedTx.source_complete_txid}`}
+                        }/tx/${selectedTx.settle_tx_hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-neutral-500 transition-colors hover:text-orange-500"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {selectedTx.source_settle_tx_hash && (
+                <div>
+                  <div className="mb-2 text-neutral-400">Source Settlement Transaction</div>
+                  <div className="flex items-center gap-2 rounded border border-neutral-700 bg-neutral-800 p-3">
+                    <span className="flex-1 truncate font-mono text-sm text-white">
+                      {selectedTx.source_settle_tx_hash}
+                    </span>
+                    <button
+                      onClick={() => copyToClipboard(selectedTx.source_settle_tx_hash!, "modal-source-settle")}
+                      className="text-neutral-500 transition-colors hover:text-orange-500"
+                    >
+                      {copiedField === "modal-source-settle" ? (
+                        <Check className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </button>
+                    <a
+                      href={`${selectedTx.source_chain === "ethereum"
+                        ? process.env.NEXT_PUBLIC_ETHEREUM_EXPLORER
+                        : process.env.NEXT_PUBLIC_STARKNET_EXPLORER
+                        }/tx/${selectedTx.source_settle_tx_hash}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-neutral-500 transition-colors hover:text-orange-500"
