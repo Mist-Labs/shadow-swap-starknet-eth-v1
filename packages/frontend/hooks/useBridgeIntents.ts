@@ -1,44 +1,51 @@
-import { IntentStatusResponse, IntentStatus } from "@/lib/api"
+import { useQuery } from "@tanstack/react-query"
+import { formatDistanceToNow } from "date-fns"
+import { listBridgeIntents } from "@/lib/api"
+import type { IntentStatusResponse, IntentStatus } from "@/lib/api"
+import type { ChainType } from "@/lib/tokens"
 
-export function useBridgeIntents(options?: { limit?: number; status?: IntentStatus; chain?: string }) {
-  // Placeholder data, use options to satisfy linter
-  const limit = options?.limit || 10;
-  const statusFilter = options?.status;
-  const chainFilter = options?.chain;
-  
-  const rawIntents: IntentStatusResponse[] = [
-    {
-      intent_id: "0x123...abc",
-      source_chain: "ethereum",
-      dest_chain: "starknet",
-      source_token: "USDC",
-      dest_token: "USDC",
-      amount: "100000000",
-      status: "completed",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      source_complete_txid: "0xdef...456",
-      dest_fill_txid: "0xabc...123",
-      commitment: "0xabc",
-      deadline: Date.now() + 86400000,
-      has_privacy: true
-    }
-  ]
+interface UseBridgeIntentsOptions {
+  limit?: number
+  status?: IntentStatus
+  chain?: ChainType
+  userAddress?: string
+  /** Derived view key — when provided, backend will filter intents by this key */
+  viewKey?: string
+  refetchInterval?: number
+}
 
-  let intents = rawIntents;
-  if (statusFilter) {
-    intents = intents.filter(i => i.status === statusFilter);
-  }
-  if (chainFilter) {
-    intents = intents.filter(i => i.source_chain === chainFilter || i.dest_chain === chainFilter);
-  }
+/**
+ * Fetches bridge intents from the real backend API via the /api/intents proxy.
+ * All filters are passed through to the server — NO mock data.
+ *
+ * When viewKey is provided the query key changes so React Query re-fetches
+ * automatically, and the proxy forwards view_key to the backend.
+ */
+export function useBridgeIntents(options: UseBridgeIntentsOptions = {}) {
+  const { limit, status, chain, userAddress, viewKey, refetchInterval = 15_000 } = options
+
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+    queryKey: ["bridgeIntents", { limit, status, chain, userAddress, viewKey }],
+    queryFn: async () => {
+      const result = await listBridgeIntents({ status, chain, limit, userAddress, viewKey })
+      return result
+    },
+    refetchInterval,
+    staleTime: 10_000,
+    retry: 2,
+  })
+
+  const intents: IntentStatusResponse[] = data?.data ?? []
+  const count = data?.count ?? 0
 
   return {
-    intents: intents.slice(0, limit),
-    count: intents.length,
-    isLoading: false,
-    error: null,
-    refetch: async () => {}
+    intents,
+    count,
+    isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch: async () => { await refetch() },
   }
 }
 
@@ -48,40 +55,34 @@ export function formatChainName(chain: string) {
   return chain
 }
 
-export function formatTimeAgo(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-  if (seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
-  if (seconds < 604800) return `${Math.floor(seconds / 86400)} days ago`;
-
-  return date.toLocaleDateString();
+export function formatTimeAgo(dateValue: string | number | undefined): string {
+  if (!dateValue) return "–"
+  try {
+    const date =
+      typeof dateValue === "number"
+        ? new Date(dateValue * 1000)  // unix timestamp → ms
+        : new Date(dateValue)
+    if (isNaN(date.getTime())) return "–"
+    return formatDistanceToNow(date, { addSuffix: true })
+  } catch {
+    return "–"
+  }
 }
 
 export function formatAmount(amount: string, decimals: number = 6): string {
   try {
-    const value = BigInt(amount);
-    const divisor = BigInt(10 ** decimals);
-    const quotient = value / divisor;
-    const remainder = value % divisor;
+    const value = BigInt(amount)
+    const divisor = BigInt(10 ** decimals)
+    const quotient = value / divisor
+    const remainder = value % divisor
 
-    if (remainder === BigInt(0)) {
-      return quotient.toString();
-    }
+    if (remainder === BigInt(0)) return quotient.toString()
 
-    const remainderStr = remainder.toString().padStart(decimals, "0");
-    const trimmedRemainder = remainderStr.slice(0, Math.min(6, decimals)).replace(/0+$/, "");
+    const remainderStr = remainder.toString().padStart(decimals, "0")
+    const trimmed = remainderStr.slice(0, Math.min(6, decimals)).replace(/0+$/, "")
 
-    if (trimmedRemainder === "") {
-      return quotient.toString();
-    }
-
-    return `${quotient}.${trimmedRemainder}`;
-  } catch (error) {
-    console.error("Error formatting amount:", error);
-    return amount;
+    return trimmed === "" ? quotient.toString() : `${quotient}.${trimmed}`
+  } catch {
+    return amount
   }
 }

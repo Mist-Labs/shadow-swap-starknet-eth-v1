@@ -88,40 +88,6 @@ export default function StatsPage() {
     { range: "50-60s", count: 12 },
   ]
 
-  const solverPerformance = [
-    {
-      rank: 1,
-      solver: "0x1234...5678",
-      volume: "$4.2M",
-      fills: 1234,
-      avgTime: "15s",
-      successRate: "99.8%",
-    },
-    {
-      rank: 2,
-      solver: "0xabcd...ef12",
-      volume: "$3.8M",
-      fills: 1089,
-      avgTime: "18s",
-      successRate: "99.5%",
-    },
-    {
-      rank: 3,
-      solver: "0x9876...4321",
-      volume: "$2.9M",
-      fills: 876,
-      avgTime: "16s",
-      successRate: "99.7%",
-    },
-    {
-      rank: 4,
-      solver: "0xfedc...ba98",
-      volume: "$1.5M",
-      fills: 543,
-      avgTime: "22s",
-      successRate: "98.9%",
-    },
-  ]
 
   // Calculate asset distribution from volume by token
   const assetDistribution = useMemo(() => {
@@ -398,43 +364,19 @@ export default function StatsPage() {
               </CardContent>
             </Card>
 
-            {/* Solver Performance Table */}
+            {/* Solver Performance */}
             <Card className="border-neutral-800 bg-neutral-900">
               <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-white">Top Solver Performance</CardTitle>
-                    <CardDescription className="text-neutral-400">Ranked by volume handled</CardDescription>
-                  </div>
-                  <Badge variant="outline" className="border-yellow-500/20 bg-yellow-500/10 text-yellow-500">
-                    Sample Data
-                  </Badge>
-                </div>
+                <CardTitle className="text-white">Top Solver Performance</CardTitle>
+                <CardDescription className="text-neutral-400">Ranked by volume handled</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  {solverPerformance.map((solver) => (
-                    <div
-                      key={solver.rank}
-                      className="flex items-center justify-between rounded-lg bg-neutral-800/50 p-3 transition-colors hover:bg-neutral-800"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500/10 text-sm font-bold text-orange-500">
-                          #{solver.rank}
-                        </div>
-                        <div>
-                          <div className="font-mono text-sm text-white">{solver.solver}</div>
-                          <div className="text-xs text-neutral-500">
-                            {solver.fills} fills • {solver.avgTime} avg
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-semibold text-white">{solver.volume}</div>
-                        <div className="text-xs text-green-500">{solver.successRate}</div>
-                      </div>
-                    </div>
-                  ))}
+                <div className="flex flex-col items-center justify-center gap-3 py-10 text-center text-neutral-500">
+                  <div className="rounded-full border border-neutral-700 bg-neutral-800 p-4">
+                    <TrendingUp className="h-8 w-8 text-neutral-600" />
+                  </div>
+                  <p className="font-medium text-neutral-400">Solver leaderboard</p>
+                  <p className="text-sm">Per-solver data will be available once the solver network is live</p>
                 </div>
               </CardContent>
             </Card>
@@ -456,7 +398,7 @@ export default function StatsPage() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {Object.entries(healthComponents).map(([component, status], index) => (
+                {Object.entries(healthComponents ?? {}).map(([component, status], index) => (
                   <div key={index} className="flex items-center justify-between rounded-lg bg-neutral-800/50 p-4">
                     <div>
                       <div className="mb-1 font-medium capitalize text-white">{component.replace(/_/g, " ")}</div>

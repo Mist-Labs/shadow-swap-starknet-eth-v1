@@ -1,60 +1,47 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ArrowRight, TrendingUp, Users, Clock, CheckCircle2, FileText } from "lucide-react"
+import { useBridgeStats } from "@/hooks/useBridgeStats"
 
 export default function HeroSection() {
-    const [totalVolume, setTotalVolume] = useState(0)
-    const [activeUsers, setActiveUsers] = useState(0)
-    const [avgBridgeTime, setAvgBridgeTime] = useState(0)
-    const [totalTransactions, setTotalTransactions] = useState(0)
+    // Pull live numbers from the backend stats endpoint
+    const {
+        totalIntents,
+        completedIntents,
+        isLoading,
+    } = useBridgeStats(60_000)
 
-    // Animated counter effect
+    // Animated count-up for the real stats
+    const [displayed, setDisplayed] = useState({
+        volume: 0,
+        transactions: 0,
+        avgTime: 18, // architecture spec: ~18s
+    })
+
     useEffect(() => {
-        const volumeTarget = 12500000
-        const usersTarget = 3421
-        const timeTarget = 18
-        const transactionsTarget = 45231
-        const duration = 2000
-
-        const stepVolume = volumeTarget / (duration / 16)
-        const stepUsers = usersTarget / (duration / 16)
-        const stepTime = timeTarget / (duration / 16)
-        const stepTransactions = transactionsTarget / (duration / 16)
-
-        let currentVolume = 0
-        let currentUsers = 0
-        let currentTime = 0
-        let currentTransactions = 0
-
-        const interval = setInterval(() => {
-            currentVolume = Math.min(currentVolume + stepVolume, volumeTarget)
-            currentUsers = Math.min(currentUsers + stepUsers, usersTarget)
-            currentTime = Math.min(currentTime + stepTime, timeTarget)
-            currentTransactions = Math.min(currentTransactions + stepTransactions, transactionsTarget)
-
-            setTotalVolume(Math.floor(currentVolume))
-            setActiveUsers(Math.floor(currentUsers))
-            setAvgBridgeTime(Math.floor(currentTime))
-            setTotalTransactions(Math.floor(currentTransactions))
-
-            if (currentVolume >= volumeTarget) {
-                clearInterval(interval)
-            }
-        }, 16)
-
-        return () => clearInterval(interval)
-    }, [])
-
-    const formatNumber = (num: number) => {
-        if (num >= 1000000) {
-            return `$${(num / 1000000).toFixed(1)}M`
+        if (isLoading) return
+        const target = {
+            transactions: totalIntents,
         }
-        return num.toLocaleString()
-    }
+        const duration = 1200
+        const steps = Math.ceil(duration / 16)
+        let step = 0
+        const timer = setInterval(() => {
+            step++
+            const progress = Math.min(step / steps, 1)
+            setDisplayed({
+                volume: 0,   // not exposed by current API; hide
+                transactions: Math.floor(target.transactions * progress),
+                avgTime: 18,
+            })
+            if (progress >= 1) clearInterval(timer)
+        }, 16)
+        return () => clearInterval(timer)
+    }, [isLoading, totalIntents])
 
     return (
         <section className="relative overflow-hidden px-4 pb-20 pt-32 sm:px-6 sm:pb-32 sm:pt-40">
@@ -69,8 +56,8 @@ export default function HeroSection() {
             />
 
             {/* Glowing Orbs */}
-            <div className="absolute left-1/4 top-1/4 h-96 w-96 animate-pulse rounded-full bg-orange-500/10 blur-3xl"></div>
-            <div className="absolute bottom-1/4 right-1/4 h-96 w-96 animate-pulse rounded-full bg-pink-500/10 blur-3xl delay-1000"></div>
+            <div className="absolute left-1/4 top-1/4 h-96 w-96 animate-pulse rounded-full bg-orange-500/10 blur-3xl" />
+            <div className="absolute bottom-1/4 right-1/4 h-96 w-96 animate-pulse rounded-full bg-pink-500/10 blur-3xl delay-1000" />
 
             <div className="relative z-10 mx-auto max-w-6xl text-center">
                 {/* Badge */}
@@ -122,61 +109,58 @@ export default function HeroSection() {
                     </Link>
                 </div>
 
-                {/* Stats Ticker */}
+                {/* Live Stats Grid */}
                 <div className="mx-auto grid max-w-4xl grid-cols-2 gap-6 md:grid-cols-4">
+                    {/* Total Transactions – live */}
                     <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-6 backdrop-blur-sm transition-all duration-300 hover:border-orange-500/30">
                         <div className="mb-2 flex items-center justify-center gap-2">
                             <TrendingUp className="h-5 w-5 text-orange-500" />
-                            <span className="text-xs tracking-wider text-neutral-500">TOTAL VOLUME</span>
+                            <span className="text-xs tracking-wider text-neutral-500">TRANSACTIONS</span>
                         </div>
-                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">{formatNumber(totalVolume)}</div>
+                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">
+                            {isLoading ? "–" : displayed.transactions.toLocaleString()}
+                        </div>
                     </div>
 
+                    {/* Completed – live */}
                     <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-6 backdrop-blur-sm transition-all duration-300 hover:border-orange-500/30">
                         <div className="mb-2 flex items-center justify-center gap-2">
-                            <Users className="h-5 w-5 text-orange-500" />
-                            <span className="text-xs tracking-wider text-neutral-500">ACTIVE USERS</span>
+                            <CheckCircle2 className="h-5 w-5 text-orange-500" />
+                            <span className="text-xs tracking-wider text-neutral-500">COMPLETED</span>
                         </div>
-                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">{activeUsers.toLocaleString()}</div>
+                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">
+                            {isLoading ? "–" : (completedIntents ?? 0).toLocaleString()}
+                        </div>
                     </div>
 
+                    {/* Avg Bridge Time – architecture constant */}
                     <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-6 backdrop-blur-sm transition-all duration-300 hover:border-orange-500/30">
                         <div className="mb-2 flex items-center justify-center gap-2">
                             <Clock className="h-5 w-5 text-orange-500" />
                             <span className="text-xs tracking-wider text-neutral-500">AVG BRIDGE TIME</span>
                         </div>
-                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">{avgBridgeTime}s</div>
+                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">~18s</div>
                     </div>
 
+                    {/* Networks supported */}
                     <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-6 backdrop-blur-sm transition-all duration-300 hover:border-orange-500/30">
                         <div className="mb-2 flex items-center justify-center gap-2">
-                            <CheckCircle2 className="h-5 w-5 text-orange-500" />
-                            <span className="text-xs tracking-wider text-neutral-500">TRANSACTIONS</span>
+                            <Users className="h-5 w-5 text-orange-500" />
+                            <span className="text-xs tracking-wider text-neutral-500">NETWORKS</span>
                         </div>
-                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">
-                            {totalTransactions.toLocaleString()}
-                        </div>
+                        <div className="font-mono text-2xl font-bold text-white sm:text-3xl">2</div>
                     </div>
                 </div>
             </div>
 
             <style jsx>{`
         @keyframes grid-move {
-          0% {
-            transform: translateY(0);
-          }
-          100% {
-            transform: translateY(50px);
-          }
+          0% { transform: translateY(0); }
+          100% { transform: translateY(50px); }
         }
         @keyframes gradient {
-          0%,
-          100% {
-            background-position: 0% 50%;
-          }
-          50% {
-            background-position: 100% 50%;
-          }
+          0%, 100% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
         }
         .animate-gradient {
           background-size: 200% 200%;
