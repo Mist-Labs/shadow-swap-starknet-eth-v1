@@ -21,3 +21,4 @@ cache
 backend.log
 backend_debug.log
 FRONTEND_INTEGRATION_GUIDE.md
+.vercel
