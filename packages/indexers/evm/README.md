@@ -1,6 +1,6 @@
 # ShadowSwap Indexer (EVM)
 
-Goldsky webhook indexer for ShadowSwap privacy bridge on Ethereum/Sepolia.
+Goldsky webhook indexer for the ShadowSwap privacy bridge on Ethereum Mainnet. Receives real-time contract events via Goldsky, authenticates them, and forwards to the settlement relayer.
 
 ## Architecture
 
@@ -8,16 +8,25 @@ Goldsky webhook indexer for ShadowSwap privacy bridge on Ethereum/Sepolia.
 EVM Contract → Goldsky → Webhook Server → Backend Relayer
 ```
 
-- **Goldsky**: Indexes EVM events in real-time
-- **Webhook Server**: Receives events, transforms, authenticates with HMAC
-- **Backend**: Processes events and updates database
+- **Goldsky**: Indexes EVM contract events in real-time and pushes to webhook
+- **Webhook Server**: Express server — validates Goldsky auth, deduplicates, transforms, and forwards events to relayer via HMAC-signed requests
+- **Relayer**: Processes events and updates intent/commitment state in database
 
 ## Events Indexed
 
-- `commitment_added` - When commitment added to Merkle tree
-- `settled` - When settlement completes on destination chain
-- `marked_settled` - When settlement marked on source chain
-- `merkle_root_updated` - When Merkle root syncs
+| Entity | Description |
+|--------|-------------|
+| `commitment_added` | Commitment added to on-chain Merkle tree |
+| `intent_settled` | Settlement completed on destination chain |
+| `intent_marked_settled` | Settlement marked on source chain |
+| `merkle_root_updated` | Merkle root updated after batch processed |
+| `batch_processed` | Pending batch sealed on-chain |
+
+## Contract Addresses
+
+| Network | Address |
+|---------|---------|
+| Ethereum Mainnet | `0xDcDdb3E6EA09dA3a93B1f41BCd017156Ce8b9468` |
 
 ## Setup
 
@@ -34,33 +43,86 @@ cp .env.example .env
 # Edit .env with your values
 ```
 
+Required environment variables:
+
+```env
+PORT=3000
+WEBHOOK_URL=https://your-webhook-domain.com/webhook   # Public URL of this server — used when registering with Goldsky
+GOLDSKY_WEBHOOK_SECRET=...                            # From Goldsky dashboard — used to authenticate incoming webhooks
+RELAYER_BASE_URL=https://your-backend.com/api/v1
+HMAC_SECRET=...                                       # Must match backend HMAC_SECRET exactly
+```
+
 ### 3. Build
 
 ```bash
 npm run build
 ```
 
-### 4. Deploy to Goldsky
+### 4. Deploy Webhook Server
+
+Deploy as a **Web Service** (not Worker) — requires the `/health` endpoint to be reachable for health checks.
+
+#### Koyeb
+
+Build from repo root (monorepo):
 
 ```bash
-./deploy.sh
+docker build -t shadowswap-evm-indexer -f packages/indexers/evm/Dockerfile .
 ```
 
-### 5. Configure Webhook in Goldsky Dashboard
+- Dockerfile location: `packages/indexers/evm/Dockerfile`
+- Deploy as: **Web Service**
+- Health check: `GET /health`
 
-- Webhook URL: `https://your-domain.com/webhook`
-- Add header: `goldsky-webhook-secret: your_secret`
-- Select events: All from `ShadowSettlement` contract
+#### Docker
 
-### 6. Deploy Webhook Server
+```bash
+# Build from repo root
+docker build -t shadowswap-evm-indexer -f packages/indexers/evm/Dockerfile .
+docker run -p 3000:3000 --env-file .env shadowswap-evm-indexer
+```
 
-Deploy to your hosting platform (Railway, Render, Fly.io, etc.)
+#### Railway / Render / Fly.io
 
-Environment variables needed:
-- `PORT=3000`
-- `GOLDSKY_WEBHOOK_SECRET=...`
-- `RELAYER_BASE_URL=https://your-backend.com/api/v1`
-- `HMAC_SECRET=...` (must match backend)
+```bash
+railway up
+```
+
+### 5. Configure Goldsky Webhook
+
+In the Goldsky dashboard:
+
+- **Webhook URL**: `https://your-domain.com/webhook`
+- **Auth header**: `goldsky-webhook-secret: your_secret`
+- **Contract**: `ShadowSettlement` at `0xDcDdb3E6EA09dA3a93B1f41BCd017156Ce8b9468`
+- **Events**: Select all (commitment_added, intent_settled, intent_marked_settled, merkle_root_updated, batch_processed)
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhook` | Receives Goldsky event payloads |
+| `GET` | `/health` | Health check — returns `{ status: "ok" }` |
+
+### Webhook Auth
+
+Goldsky sends a `goldsky-webhook-secret` header with each request. The server validates this against `GOLDSKY_WEBHOOK_SECRET` before processing.
+
+### Relayer Forwarding
+
+Events are forwarded to the relayer with HMAC-SHA256 signing:
+
+```
+x-signature: <hmac-sha256(HMAC_SECRET, timestamp + body)>
+x-timestamp:  <unix timestamp>
+```
+
+The relayer validates these headers using the shared `HMAC_SECRET`.
+
+## Deduplication
+
+In-memory deduplication cache with 1-hour TTL prevents duplicate events from being forwarded to the relayer if Goldsky delivers the same event more than once.
 
 ## Local Development
 
@@ -68,34 +130,17 @@ Environment variables needed:
 npm run dev
 ```
 
-Test webhook:
+Test webhook locally:
+
 ```bash
 curl -X POST http://localhost:3000/webhook \
   -H "goldsky-webhook-secret: your_secret" \
   -H "Content-Type: application/json" \
-  -d '{...}'
+  -d '{"event": "commitment_added", "data": {...}}'
 ```
 
-## Deployment
-
-### Railway
-```bash
-railway up
-```
-
-### Docker
-```bash
-docker build -t shadowswap-indexer .
-docker run -p 3000:3000 --env-file .env shadowswap-indexer
-```
-
-## Health Check
+Health check:
 
 ```bash
 curl http://localhost:3000/health
 ```
-
-## Contract Addresses
-
-- **Ethereum**: `0x239365b4A26d947B9CE38ec88A804F03b8248042`
-- **Sepolia**: `0x239365b4A26d947B9CE38ec88A804F03b8248042`
