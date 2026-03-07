@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
-const RELAYER_URL =
-    process.env.NEXT_PUBLIC_RELAYER_URL ||
-    process.env.NEXT_PUBLIC_API_BASE_URL ||
-    ""
+const RELAYER_URL = "https://appropriate-chelsea-mist-labs-1f0a1134.koyeb.app/api/v1"
 
 // All backend intent statuses (v2.0 spec)
 const ALL_STATUSES = [
@@ -47,7 +44,9 @@ async function fetchByStatus(
         const body = (await res.json()) as { data?: Record<string, unknown>[] }
         return Array.isArray(body?.data) ? body.data : []
     } catch (err) {
-        console.error(`[intents proxy] fetch error for status=${status}:`, err)
+        if (err instanceof Error && err.name !== "TimeoutError") {
+            console.error(`[intents proxy] fetch error for status=${status}:`, err)
+        }
         return []
     }
 }

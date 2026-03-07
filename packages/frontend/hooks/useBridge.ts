@@ -14,6 +14,7 @@ import { createNearSwapQuote, submitDepositToNear } from "@/lib/near"
 import { getAvnuQuote, buildMulticall } from "@/lib/avnu"
 import { initiateBridge } from "@/lib/api"
 import { getTokenInfo, STRK_TOKEN, type ChainType } from "@/lib/tokens"
+import { ETHEREUM_CONTRACTS, STARKNET_CONTRACTS } from "@/lib/contracts"
 
 // ─── Step labels ──────
 
@@ -130,8 +131,8 @@ export function useBridge() {
 
             const settlementContract =
                 params.destChain === "ethereum"
-                    ? process.env.NEXT_PUBLIC_EVM_SETTLEMENT!
-                    : process.env.NEXT_PUBLIC_STARKNET_SETTLEMENT!
+                    ? ETHEREUM_CONTRACTS.intentPool
+                    : STARKNET_CONTRACTS.intentPool
 
             const nearQuote = await createNearSwapQuote({
                 originAsset,
@@ -167,8 +168,8 @@ export function useBridge() {
             setStep("submitting-backend")
             const initPayload = {
                 intent_id: backendIntentId,
-                source_chain: params.sourceChain,
-                dest_chain: params.destChain,
+                source_chain: (params.sourceChain === "ethereum" ? "evm" : "starknet") as "evm" | "starknet",
+                dest_chain: (params.destChain === "ethereum" ? "evm" : "starknet") as "evm" | "starknet",
                 token: effectiveToken.address,     // STRK for multicall, original token otherwise
                 amount: bridgeAmount,
                 commitment: privacyData.commitment,
@@ -179,7 +180,6 @@ export function useBridge() {
                 encrypted_secret,
                 encrypted_nullifier,
                 deposit_address: nearQuote.deposit_address,
-                refund_address: params.walletAddress,
             }
 
             const response = await initiateBridge(initPayload)
