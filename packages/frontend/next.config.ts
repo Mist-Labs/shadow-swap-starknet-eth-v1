@@ -2,11 +2,17 @@ import type { NextConfig } from "next"
 import path from "path"
 
 const nextConfig: NextConfig = {
-  webpack(config, { isServer }) {
-    // @metamask/sdk (an optional dep via @reown/appkit-adapter-wagmi) tries to
-    // import @react-native-async-storage/async-storage which doesn't exist in
-    // a browser/Node environment. Stub it out with an empty module so the build
-    // succeeds without warnings.
+  // Turbopack (Next.js 16 default — used by `pnpm dev`)
+  // resolveAlias needs a project-root-relative path, NOT an absolute path
+  turbopack: {
+    resolveAlias: {
+      "@react-native-async-storage/async-storage": "./lib/stubs/async-storage.js",
+    },
+  },
+
+  // Webpack (used by `pnpm build` / production)
+  // webpack requires the absolute path
+  webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,
       "@react-native-async-storage/async-storage": path.resolve(
@@ -14,7 +20,6 @@ const nextConfig: NextConfig = {
         "lib/stubs/async-storage.js"
       ),
     }
-
     return config
   },
 }

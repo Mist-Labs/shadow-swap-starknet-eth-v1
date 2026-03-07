@@ -38,38 +38,35 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 const HMAC_SECRET = process.env.NEXT_PUBLIC_HMAC_SECRET || "";
 
 /**
- * Intent status types
+ * Intent status types — user-friendly normalized values
  */
 export type IntentStatus =
-  | "created"
-  | "committed"
-  | "filled"
-  | "completed"
-  | "refunded"
-  | "failed";
+    | "processing"        // pending / batched
+    | "bridging"          // near_submitted
+    | "settling"          // tokens_delivered / settled
+    | "completed"         // marked_settled
+    | "refunded"
+    | "failed"
+    | "expired"
 
 /**
- * Bridge intent initiation request
- * Updated to match API v1.0.0 specification
+ * Bridge intent initiation request — v2.0 backend spec
  */
 export interface BridgeInitiateRequest {
-  intent_id: string;
-  user_address: string;
-  source_chain: ChainType;
-  dest_chain: ChainType;
-  source_token: string;
-  dest_token: string;
-  amount: string;
-  commitment: string;
-  encrypted_secret: string; // ECIES encrypted secret
-  encrypted_nullifier: string; // ECIES encrypted nullifier
-  nullifier_hash: string;
-  claim_auth: string;
-  encrypted_recipient: string; // ECIES UTF-8 string
-  refund_address: string;
-  near_intents_id: string; // UUID from correlationId
-  view_key: string;
-  deposit_address: string;
+    intent_id: string;            // 0x + 64 hex (crypto.randomBytes(32))
+    source_chain: ChainType;      // "ethereum" | "starknet"
+    dest_chain: ChainType;
+    token: string;                // Source token address (STRK/ETH for StarkNet multicall outputs)
+    amount: string;               // Decimal string, smallest unit
+    commitment: string;           // 0x + 64 hex — 5-parameter hash
+    nullifier_hash: string;       // 0x + 64 hex
+    view_key: string;             // 0x + 64 hex — deterministic
+    near_intents_id: string;      // UUID correlationId from NEAR quote
+    encrypted_recipient: string;  // ECIES UTF-8 encoded destination address
+    encrypted_secret: string;     // ECIES raw bytes
+    encrypted_nullifier: string;  // ECIES raw bytes
+    deposit_address: string;      // NEAR deposit address from quote
+    refund_address: string;       // User's source-chain address
 }
 
 /**
@@ -127,25 +124,26 @@ export interface IntentStatusResponse {
 }
 
 /**
- * Map backend v2.0 status strings → frontend display status
+ * Map backend v2.0 status strings → user-friendly frontend status
  */
 function normalizeIntentResponse(
-  backend: BackendIntentResponse
+    backend: BackendIntentResponse
 ): IntentStatusResponse {
-  const statusMap: Record<string, IntentStatus> = {
-    pending:         "created",
-    batched:         "committed",
-    near_submitted:  "committed",
-    tokens_delivered: "filled",
-    settled:         "completed",
-    marked_settled:  "completed",
-    failed:          "failed",
-    refunded:        "refunded",
-  };
+    const statusMap: Record<string, IntentStatus> = {
+        pending:          "processing",
+        batched:          "processing",
+        near_submitted:   "bridging",
+        tokens_delivered: "settling",
+        settled:          "settling",
+        marked_settled:   "completed",
+        failed:           "failed",
+        refunded:         "refunded",
+        expired:          "expired",
+    }
 
   return {
     intent_id:             backend.intent_id,
-    status:                statusMap[backend.status] ?? "created",
+    status:                statusMap[backend.status] ?? "processing",
     source_chain:          backend.source_chain,
     dest_chain:            backend.dest_chain,
     source_token:          backend.token,  // backend has single token field
