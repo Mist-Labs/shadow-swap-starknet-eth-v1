@@ -11,7 +11,6 @@ import {
     Shield,
     Network,
     Clock,
-    FileSignature,
     CheckSquare,
     XCircle,
 } from "lucide-react"
@@ -49,37 +48,37 @@ const STEP_MAP: Record<
     },
     "generating-params": {
         title: "Generating Privacy Params",
-        description: "Creating commitment and secrets...",
+        description: "Creating commitment and cryptographic secrets...",
         icon: Shield,
     },
     "fetching-quote": {
         title: "Fetching Quote",
-        description: "Retrieving cross-chain swap path...",
+        description: "Retrieving cross-chain bridge route...",
         icon: Shield,
     },
-    "signing-auth": {
-        title: "Sign Authorization",
-        description: "Sign to authorize auto-claim...",
-        icon: FileSignature,
+    "swapping-to-strk": {
+        title: "Swapping to STRK",
+        description: "Getting AVNU quote to convert USDT/USDC → STRK...",
+        icon: CheckSquare,
     },
-    "approving-token": {
-        title: "Approving Token",
-        description: "Approving token for bridge contract...",
+    "multicall-pending": {
+        title: "Executing Swap & Bridge",
+        description: "Approve + Swap + Transfer in one atomic transaction...",
         icon: CheckSquare,
     },
     "creating-intent": {
         title: "Creating Intent",
-        description: "Submitting intent on-chain...",
+        description: "Registering bridge intent with relayer...",
         icon: Network,
     },
     "submitting-backend": {
-        title: "Notifying Backend",
-        description: "Registering with relayer...",
+        title: "Submitting to Backend",
+        description: "Registering intent with relayer...",
         icon: Network,
     },
     "waiting-solver": {
-        title: "Waiting for Solver",
-        description: "Solvers competing for best rate...",
+        title: "Bridging in Progress",
+        description: "Bridge may take 1–15 minutes due to NEAR indexer latency.",
         icon: Loader2,
     },
     completed: {
@@ -97,7 +96,7 @@ const STEP_MAP: Record<
 // Steps to display in order
 const DISPLAY_STEPS: BridgeStep[] = [
     "generating-params",
-    "signing-auth",
+    "fetching-quote",
     "creating-intent",
     "waiting-solver",
     "completed",
@@ -119,7 +118,8 @@ export default function BridgeProgress({
     const isComplete = status === "completed" || step === "completed"
     const isFailed = status === "failed" || status === "refunded" || step === "failed"
     const isFullyCompleted = status === "completed"
-    const isWaitingForSolver = !isFullyCompleted && !isFailed && (status === "committed" || status === "created" || status === "filled" || step === "waiting-solver")
+    const isWaitingForSolver = !isFullyCompleted && !isFailed &&
+        (status === "processing" || status === "bridging" || status === "settling" || step === "waiting-solver")
 
     // Calculate progress
     const currentStepIndex = DISPLAY_STEPS.indexOf(step)
@@ -346,7 +346,7 @@ export default function BridgeProgress({
                         <div className="rounded-lg border border-neutral-700/50 bg-neutral-800/20 p-4 text-center">
                             <div className="flex items-center justify-center gap-2 text-sm text-neutral-400">
                                 <Clock className="h-4 w-4 animate-pulse text-orange-500" />
-                                <span>Please wait... This usually takes 10-30 seconds</span>
+                                <span>Processing... Bridge may take 1–15 minutes via NEAR</span>
                             </div>
                         </div>
                     )}

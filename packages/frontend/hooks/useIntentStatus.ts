@@ -8,7 +8,7 @@ interface UseIntentStatusParams {
 
 export function useIntentStatus({ enabled }: UseIntentStatusParams) {
   // Mock implementation
-  const intentStatus: IntentStatus | null = enabled ? "committed" : null
+  const intentStatus: IntentStatus | null = enabled ? "processing" : null
   
   return {
     intentStatus,

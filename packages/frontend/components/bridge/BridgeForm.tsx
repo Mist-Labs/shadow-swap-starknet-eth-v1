@@ -1,7 +1,4 @@
-"use client"
-"use no memo"
-
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import Image from "next/image"
 import { motion, AnimatePresence } from "framer-motion"
 import { useAccount as useEvmAccount, useBalance } from "wagmi"
@@ -17,7 +14,7 @@ import { ArrowDownUp, ArrowRight, Shield, Clock, DollarSign, AlertCircle, CheckC
 import BridgeProgress from "./BridgeProgress"
 import { useBridge } from "@/hooks/useBridge"
 import { useIntentStatus } from "@/hooks/useIntentStatus"
-import { SUPPORTED_TOKENS, getTokenInfo } from "@/lib/tokens"
+import { getSupportedTokens, getTokenInfo } from "@/lib/tokens"
 
 // Supported networks
 const NETWORKS = [
@@ -28,13 +25,13 @@ const NETWORKS = [
 export default function BridgeForm() {
     // EVM wallet (Reown / wagmi)
     const { address: evmAddress, isConnected: evmConnected } = useEvmAccount()
-    // Starknet wallet (starknet-react)
-    const { address: starknetAddress, isConnected: starknetConnected } = useStarknetAccount()
+    // Starknet wallet (starknet-react) — account object needed for multicall
+    const { address: starknetAddress, isConnected: starknetConnected, account: starknetAccount } = useStarknetAccount()
 
-    // Form state — default FROM starknet (MVP only direction is live)
+    // Form state — default FROM starknet
     const [fromNetwork, setFromNetwork] = useState(NETWORKS[0]) // Starknet
     const [toNetwork, setToNetwork] = useState(NETWORKS[1])     // Ethereum
-    const [selectedToken, setSelectedToken] = useState<string>("ETH")
+    const [selectedToken, setSelectedToken] = useState<string>("STRK")
     const [amount, setAmount] = useState("")
     const [destinationAddress, setDestinationAddress] = useState("")
     const [useConnectedWallet, setUseConnectedWallet] = useState(true)
@@ -43,11 +40,38 @@ export default function BridgeForm() {
 
     // Determine which wallet is needed & whether it's connected
     const isFromStarknet = fromNetwork.chain === "starknet"
+    // Source chain wallet (used for signing + refund address)
     const activeWalletAddress = isFromStarknet ? starknetAddress : evmAddress
     const isRequiredWalletConnected = isFromStarknet ? starknetConnected : evmConnected
 
+    // Destination chain wallet (used for "Use connected wallet" recipient checkbox)
+    // If bridging StarkNet→Ethereum: destination wallet = EVM address
+    // If bridging Ethereum→StarkNet: destination wallet = StarkNet address
+    const destWalletAddress = isFromStarknet ? evmAddress : starknetAddress
+    const isDestWalletConnected = isFromStarknet ? evmConnected : starknetConnected
+
     // Bridge hook
     const { bridge, reset, isLoading, step, intentId, txHash, error } = useBridge()
+
+    // Direction-aware token list
+    const availableTokens = useMemo(
+        () => getSupportedTokens(fromNetwork.chain),
+        [fromNetwork.chain]
+    )
+
+    // Current token's full info (used on the source chain)
+    const currentTokenInfo = getTokenInfo(selectedToken, fromNetwork.chain)
+
+    // Does selected token require a USDT/USDC→STRK multicall?
+    const needsMulticall = !!(currentTokenInfo?.requiresMulticall)
+
+    // Reset token to first valid option when network direction changes
+    useEffect(() => {
+        if (!availableTokens.includes(selectedToken)) {
+            setSelectedToken(availableTokens[0])
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fromNetwork.chain])
 
     // Real-time intent status tracking
     const { intentStatus } = useIntentStatus({
@@ -59,7 +83,6 @@ export default function BridgeForm() {
     // Show progress modal when bridge starts
     useEffect(() => {
         if (isLoading && !showProgress && !modalClosing) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
             setShowProgress(true)
             setModalClosing(false)
         }
@@ -72,7 +95,6 @@ export default function BridgeForm() {
         if (status === "completed") return
 
         if (step === "waiting-solver") {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
             setModalClosing(true)
             toast.success("Transaction submitted!", { duration: 4000 })
             const timer = setTimeout(() => {
@@ -88,7 +110,6 @@ export default function BridgeForm() {
         if (!showProgress || modalClosing) return
         if (step !== "failed" || !error) return
 
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setModalClosing(true)
         toast.error(error || "Transaction failed. Please try again.", { duration: 5000 })
 
@@ -148,11 +169,15 @@ export default function BridgeForm() {
         }
 
         const destination = useConnectedWallet
-            ? activeWalletAddress
+            ? destWalletAddress
             : destinationAddress
 
         if (!destination) {
-            toast.error("Please enter a destination address")
+            toast.error(
+                useConnectedWallet
+                    ? `Connect your ${isFromStarknet ? "EVM" : "Starknet"} wallet to use as destination address`
+                    : "Please enter a destination address"
+            )
             return
         }
 
@@ -164,6 +189,8 @@ export default function BridgeForm() {
                 amount,
                 recipient: destination,
                 walletAddress: activeWalletAddress as string,
+                // Provide starknet account for multicall (USDT/USDC on StarkNet)
+                starknetAccount: needsMulticall ? starknetAccount ?? undefined : undefined,
             })
             setAmount("")
             setDestinationAddress("")
@@ -331,13 +358,15 @@ export default function BridgeForm() {
                                         </div>
                                         <div className="text-left">
                                             <div className="font-medium text-white">{selectedToken}</div>
-                                            <div className="text-xs text-neutral-500">1:1 Bridge</div>
+                                            <div className="text-xs text-neutral-500">
+                                                {currentTokenInfo?.name || selectedToken}
+                                            </div>
                                         </div>
                                     </div>
                                 </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
-                                {SUPPORTED_TOKENS.map((token) => {
+                                {availableTokens.map((token) => {
                                     const tokenInfo = getTokenInfo(token, fromNetwork.chain)
                                     return (
                                         <SelectItem key={token} value={token}>
@@ -353,7 +382,7 @@ export default function BridgeForm() {
                                                 </div>
                                                 <div className="text-left">
                                                     <div className="font-medium">{tokenInfo?.name || token}</div>
-                                                    <div className="text-xs text-neutral-500">{token}</div>
+                                                    <div className="text-xs text-neutral-500">{token}{tokenInfo?.requiresMulticall ? " · Swap first" : ""}</div>
                                                 </div>
                                             </div>
                                         </SelectItem>
@@ -362,6 +391,18 @@ export default function BridgeForm() {
                             </SelectContent>
                         </Select>
                     </div>
+
+                    {/* Multicall info banner — shown when USDT/USDC on StarkNet selected */}
+                    {needsMulticall && (
+                        <div className="mb-6 flex items-start gap-3 rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-300">
+                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-400" />
+                            <span>
+                                <strong>{selectedToken} on StarkNet</strong> is not natively supported by NEAR.
+                                {" "}Your wallet will prompt for <strong>one transaction</strong> that atomically
+                                swaps {selectedToken} → STRK via AVNU, then sends STRK to the bridge. No stuck funds.
+                            </span>
+                        </div>
+                    )}
 
                     {/* Amount Input */}
                     <div className="mb-6">
@@ -399,17 +440,37 @@ export default function BridgeForm() {
                                     type="checkbox"
                                     id="useConnected"
                                     checked={useConnectedWallet}
+                                    disabled={!isDestWalletConnected}
                                     onChange={(e) => setUseConnectedWallet(e.target.checked)}
-                                    className="h-4 w-4 rounded border-neutral-700 bg-neutral-800 text-orange-500"
+                                    className="h-4 w-4 rounded border-neutral-700 bg-neutral-800 text-orange-500 disabled:opacity-40"
                                 />
-                                <label htmlFor="useConnected" className="cursor-pointer text-sm text-neutral-400">
-                                    Use connected wallet address
+                                <label
+                                    htmlFor="useConnected"
+                                    className={`cursor-pointer text-sm ${isDestWalletConnected ? "text-neutral-400" : "text-neutral-600"}`}
+                                >
+                                    Use connected {isFromStarknet ? "EVM" : "Starknet"} wallet as recipient
                                 </label>
                             </div>
+
+                            {/* Show the auto-filled address when checkbox is checked */}
+                            {useConnectedWallet && isDestWalletConnected && destWalletAddress && (
+                                <div className="rounded-lg border border-neutral-700 bg-neutral-800/50 px-3 py-2 font-mono text-xs text-neutral-300 break-all">
+                                    {destWalletAddress}
+                                </div>
+                            )}
+
+                            {/* Prompt to connect dest wallet when checkbox is checked but wallet not connected */}
+                            {useConnectedWallet && !isDestWalletConnected && (
+                                <p className="text-xs text-amber-400">
+                                    Connect your {isFromStarknet ? "EVM" : "Starknet"} wallet to auto-fill, or uncheck to enter manually.
+                                </p>
+                            )}
+
+                            {/* Manual input when checkbox is unchecked */}
                             {!useConnectedWallet && (
                                 <Input
                                     type="text"
-                                    placeholder="0x..."
+                                    placeholder={isFromStarknet ? "0x... (Ethereum address)" : "0x... (Starknet address)"}
                                     value={destinationAddress}
                                     onChange={(e) => setDestinationAddress(e.target.value)}
                                     className="border-neutral-700 bg-neutral-800 text-white"
@@ -473,14 +534,15 @@ export default function BridgeForm() {
                         ) : (isLoading && step !== "waiting-solver") ? (
                             <>
                                 {step === "generating-params" && "Generating privacy params..."}
-                                {step === "signing-auth" && "Sign authorization..."}
-                                {step === "approving-token" && "Approving token..."}
+                                {step === "fetching-quote" && "Fetching bridge quote..."}
+                                {step === "swapping-to-strk" && "Swapping to STRK via AVNU..."}
+                                {step === "multicall-pending" && "Confirming transaction..."}
                                 {step === "creating-intent" && "Creating intent..."}
                                 {step === "submitting-backend" && "Submitting to backend..."}
                             </>
                         ) : (
                             <>
-                                Bridge Now
+                                {needsMulticall ? "Swap & Bridge" : "Bridge Now"}
                                 <ArrowRight className="ml-2 h-5 w-5" />
                             </>
                         )}
