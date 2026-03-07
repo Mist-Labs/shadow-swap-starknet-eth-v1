@@ -3,16 +3,20 @@ import { GoldskyWebhookPayload, Chain } from "./types";
 /**
  * Derive chain ID from Goldsky payload
  */
+// utils.ts
 export function deriveChainId(payload: GoldskyWebhookPayload): string {
-  // Try metadata first
   if (payload.metadata?.chain_id) {
     return payload.metadata.chain_id;
   }
 
-  // Try event data
   const eventData = payload.data.new;
   if (eventData.chain_id) {
     return eventData.chain_id;
+  }
+
+  // Goldsky doesn't include chain in payload — fall back to env
+  if (process.env.CHAIN_ID) {
+    return process.env.CHAIN_ID;
   }
 
   return "unknown";
