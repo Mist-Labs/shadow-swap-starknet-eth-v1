@@ -38,38 +38,35 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 const HMAC_SECRET = process.env.NEXT_PUBLIC_HMAC_SECRET || "";
 
 /**
- * Intent status types
+ * Intent status types — user-friendly normalized values
  */
 export type IntentStatus =
-  | "created"
-  | "committed"
-  | "filled"
-  | "completed"
-  | "refunded"
-  | "failed";
+    | "processing"        // pending / batched
+    | "bridging"          // near_submitted
+    | "settling"          // tokens_delivered / settled
+    | "completed"         // marked_settled
+    | "refunded"
+    | "failed"
+    | "expired"
 
 /**
- * Bridge intent initiation request
- * Updated to match API v1.0.0 specification
+ * Bridge intent initiation request — v2.0 backend spec
  */
 export interface BridgeInitiateRequest {
-  intent_id: string;
-  user_address: string;
-  source_chain: ChainType;
-  dest_chain: ChainType;
-  source_token: string;
-  dest_token: string;
-  amount: string;
-  commitment: string;
-  encrypted_secret: string; // ECIES encrypted secret
-  encrypted_nullifier: string; // ECIES encrypted nullifier
-  nullifier_hash: string;
-  claim_auth: string;
-  encrypted_recipient: string; // ECIES UTF-8 string
-  refund_address: string;
-  near_intents_id: string; // UUID from correlationId
-  view_key: string;
-  deposit_address: string;
+    intent_id: string;            // 0x + 64 hex (crypto.randomBytes(32))
+    source_chain: ChainType;      // "ethereum" | "starknet"
+    dest_chain: ChainType;
+    token: string;                // Source token address (STRK/ETH for StarkNet multicall outputs)
+    amount: string;               // Decimal string, smallest unit
+    commitment: string;           // 0x + 64 hex — 5-parameter hash
+    nullifier_hash: string;       // 0x + 64 hex
+    view_key: string;             // 0x + 64 hex — deterministic
+    near_intents_id: string;      // UUID correlationId from NEAR quote
+    encrypted_recipient: string;  // ECIES UTF-8 encoded destination address
+    encrypted_secret: string;     // ECIES raw bytes
+    encrypted_nullifier: string;  // ECIES raw bytes
+    deposit_address: string;      // NEAR deposit address from quote
+    refund_address: string;       // User's source-chain address
 }
 
 /**
@@ -84,85 +81,83 @@ export interface BridgeInitiateResponse {
 }
 
 /**
- * Backend raw response format (what API actually returns)
+ * Backend raw response format.
+ * Matches the Rust IntentStatusResponse struct in backend/src/api/model.rs exactly.
  */
 interface BackendIntentResponse {
-  id: string; // Backend uses "id" not "intent_id"
-  status: string; // "Committed", "Filled", etc. (capitalized)
-  source_chain: string;
+  intent_id: string;
+  status: string;        // e.g. "pending", "batched", "settled"
+  source_chain: string;  // "ethereum" | "starknet"
   dest_chain: string;
-  source_token: string;
-  dest_token: string;
+  token: string;         // single token field (not source_token/dest_token)
   amount: string;
-  source_commitment: string; // Backend uses "source_commitment"
-  dest_fill_txid: string | null;
-  source_complete_txid: string | null;
-  dest_registration_txid?: string | null;
-  deadline: number;
-  created_at: string;
-  updated_at: string;
-  user_address: string;
-  refund_address: string;
-  solver_address?: string | null;
-  block_number?: number;
-  log_index?: number;
+  commitment: string;
+  deposit_address: string | null;
+  near_status: string | null;
+  dest_tx_hash: string | null;
+  settle_tx_hash: string | null;
+  source_settle_tx_hash: string | null;
+  created_at: number;    // unix timestamp (u64 in Rust)
+  updated_at: number;
 }
 
 /**
- * Normalized intent status response (what frontend uses)
+ * Normalized intent status response (what frontend components use)
  */
 export interface IntentStatusResponse {
   intent_id: string;
   status: IntentStatus;
   source_chain: string;
   dest_chain: string;
-  source_token: string;
+  source_token: string;  // same as token — kept for display compatibility
   dest_token: string;
   amount: string;
   commitment: string;
-  dest_fill_txid: string | null;
-  source_complete_txid: string | null;
-  deadline: number;
-  created_at: string;
-  updated_at: string;
+  deposit_address: string | null;
+  near_status: string | null;
+  dest_tx_hash: string | null;
+  settle_tx_hash: string | null;
+  source_settle_tx_hash: string | null;
+  created_at: number;
+  updated_at: number;
   has_privacy: boolean;
-  user_address?: string; // For client-side filtering
 }
 
 /**
- * Normalize backend response to frontend format
- * Handles field name differences between backend and frontend
+ * Map backend v2.0 status strings → user-friendly frontend status
  */
 function normalizeIntentResponse(
-  backend: BackendIntentResponse
+    backend: BackendIntentResponse
 ): IntentStatusResponse {
-  // Map backend status names to frontend status names
-  const statusMap: Record<string, IntentStatus> = {
-    Committed: "committed",
-    Registered: "committed",
-    Filled: "filled",
-    SolverPaid: "completed",
-    UserClaimed: "completed",
-    Refunded: "refunded",
-    Failed: "failed",
-  };
+    const statusMap: Record<string, IntentStatus> = {
+        pending:          "processing",
+        batched:          "processing",
+        near_submitted:   "bridging",
+        tokens_delivered: "settling",
+        settled:          "settling",
+        marked_settled:   "completed",
+        failed:           "failed",
+        refunded:         "refunded",
+        expired:          "expired",
+    }
 
   return {
-    intent_id: backend.id, // Map "id" to "intent_id"
-    status: statusMap[backend.status] || "created",
-    source_chain: backend.source_chain,
-    dest_chain: backend.dest_chain,
-    source_token: backend.source_token,
-    dest_token: backend.dest_token,
-    amount: backend.amount,
-    commitment: backend.source_commitment, // Map "source_commitment" to "commitment"
-    dest_fill_txid: backend.dest_fill_txid,
-    source_complete_txid: backend.source_complete_txid,
-    deadline: backend.deadline,
-    created_at: backend.created_at,
-    updated_at: backend.updated_at,
-    has_privacy: true,
-    user_address: backend.user_address, // Preserve for client-side filtering
+    intent_id:             backend.intent_id,
+    status:                statusMap[backend.status] ?? "processing",
+    source_chain:          backend.source_chain,
+    dest_chain:            backend.dest_chain,
+    source_token:          backend.token,  // backend has single token field
+    dest_token:            backend.token,
+    amount:                backend.amount,
+    commitment:            backend.commitment,
+    deposit_address:       backend.deposit_address,
+    near_status:           backend.near_status,
+    dest_tx_hash:          backend.dest_tx_hash,
+    settle_tx_hash:        backend.settle_tx_hash,
+    source_settle_tx_hash: backend.source_settle_tx_hash,
+    created_at:            backend.created_at,
+    updated_at:            backend.updated_at,
+    has_privacy:           true, // All ShadowSwap txs are privacy-preserving
   };
 }
 
@@ -234,7 +229,8 @@ export async function getIntentStatus(
 ): Promise<IntentStatusResponse> {
   return retryAPICall(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/bridge/intent/${intentId}`);
+      // Route through local proxy to keep backend URL server-side
+      const response = await fetch(`/api/intent/${encodeURIComponent(intentId)}`);
 
       if (!response.ok) {
         if (response.status === 404) {
@@ -304,27 +300,28 @@ export async function pollIntentStatus(
  * @param amount - Amount to convert (optional)
  * @returns Promise<PriceResponse>
  */
+/**
+ * Get exchange rate between two tokens.
+ *
+ * NOTE: No /price endpoint exists in the current backend.
+ * Rate is fetched client-side from a public price oracle or hardcoded.
+ * This function is a stub until the backend adds a pricing endpoint.
+ */
 export async function getExchangeRate(
-  fromSymbol: string,
-  toSymbol: string,
-  amount?: number
+  _fromSymbol: string,
+  _toSymbol: string,
+  _amount?: number
 ): Promise<PriceResponse> {
-  const params = new URLSearchParams({
-    from_symbol: fromSymbol,
-    to_symbol: toSymbol,
-  });
-
-  if (amount !== undefined) {
-    params.append("amount", amount.toString());
-  }
-
-  const response = await fetch(`${API_BASE_URL}/price?${params}`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch exchange rate");
-  }
-
-  return response.json();
+  // Hardcoded 1:1 stub — replace with a real price oracle call when available
+  return {
+    from_symbol: _fromSymbol,
+    to_symbol: _toSymbol,
+    rate: 1,
+    amount: _amount ?? 1,
+    converted_amount: _amount ?? 1,
+    timestamp: Date.now(),
+    sources: [],
+  };
 }
 
 /**
@@ -337,12 +334,11 @@ export async function healthCheck(): Promise<{
   timestamp: string;
   components: Record<string, string>;
 }> {
-  const response = await fetch(`${API_BASE_URL}/health`);
-
+  // Always use the local proxy — API_BASE_URL is not available in browser bundles
+  const response = await fetch(`/api/health`);
   if (!response.ok) {
     throw new Error("Health check failed");
   }
-
   return response.json();
 }
 
@@ -354,25 +350,29 @@ export async function healthCheck(): Promise<{
 export async function getBridgeStats(): Promise<{
   status: string;
   data: {
+    // Matches the backend MetricsData struct returned by /metrics
     total_intents: number;
     pending_intents: number;
-    filled_intents: number;
-    completed_intents: number;
+    settled_intents: number;
     failed_intents: number;
     refunded_intents: number;
-    ethereum_to_starknet: number;
-    starknet_to_ethereum: number;
-    total_volume_by_token: Record<string, string>;
+    // These fields may not exist yet - treat as optional
+    filled_intents?: number;
+    completed_intents?: number;
+    ethereum_to_starknet?: number;
+    starknet_to_ethereum?: number;
+    total_volume_by_token?: Record<string, string>;
   };
 }> {
-  const response = await fetch(`${API_BASE_URL}/stats`);
-
+  // Always use the local proxy — API_BASE_URL is not available in browser bundles
+  // Proxy hits /metrics on the backend (HMAC-signed server-side)
+  const response = await fetch(`/api/stats`);
   if (!response.ok) {
     throw new Error("Failed to fetch bridge stats");
   }
-
   return response.json();
 }
+
 
 /**
  * List bridge intents with optional filters
@@ -385,6 +385,7 @@ export async function listBridgeIntents(options?: {
   chain?: ChainType;
   limit?: number;
   userAddress?: string;
+  viewKey?: string;
 }): Promise<{
   status: string;
   count: number;
@@ -396,9 +397,14 @@ export async function listBridgeIntents(options?: {
   if (options?.chain) params.append("chain", options.chain);
   if (options?.limit) params.append("limit", options.limit.toString());
   if (options?.userAddress) params.append("user_address", options.userAddress);
+  // Forward view_key so the proxy can pass it to the backend
+  // (backend will match intents stored with this view key)
+  if (options?.viewKey) params.append("view_key", options.viewKey);
 
   const queryString = params.toString();
-  const url = `${API_BASE_URL}/bridge/intents${queryString ? `?${queryString}` : ""}`;
+
+  // Always call through the local Next.js proxy (/api/intents).
+  const url = `/api/intents${queryString ? `?${queryString}` : ""}`;
 
   const response = await fetch(url);
 
@@ -406,17 +412,21 @@ export async function listBridgeIntents(options?: {
     throw new Error("Failed to fetch bridge intents");
   }
 
-  const backendResponse: {
+  const body: {
     status: string;
     count: number;
-    data: BackendIntentResponse[];
+    data: IntentStatusResponse[] | BackendIntentResponse[];
   } = await response.json();
 
-  // Normalize all intent responses
+  if (!body.data || body.data.length === 0) {
+    return { status: body.status ?? "success", count: 0, data: [] };
+  }
+
+  const rawData = body.data as BackendIntentResponse[];
   return {
-    status: backendResponse.status,
-    count: backendResponse.count,
-    data: backendResponse.data.map(normalizeIntentResponse),
+    status: body.status,
+    count: body.count,
+    data: rawData.map(normalizeIntentResponse),
   };
 }
 

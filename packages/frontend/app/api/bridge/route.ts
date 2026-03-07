@@ -1,61 +1,57 @@
+import { createHmac } from "node:crypto"
 import { NextResponse } from "next/server"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || ""
+const RELAYER_URL =
+    process.env.NEXT_PUBLIC_RELAYER_URL ||
+    process.env.NEXT_PUBLIC_API_BASE_URL ||
+    ""
 
-const HMAC_SECRET = process.env.HMAC_SECRET
+const HMAC_SECRET = process.env.HMAC_SECRET || ""
 
-async function generateHMACSignature(
-  payload: Record<string, unknown>,
-  timestamp: string
-): Promise<string> {
-  if (!HMAC_SECRET) {
-    throw new Error("HMAC secret not configured. Please set HMAC_SECRET environment variable.")
-  }
-
-  const requestBody = JSON.stringify(payload)
-  const message = timestamp + requestBody
-
-  const encoder = new TextEncoder()
-  const keyData = encoder.encode(HMAC_SECRET)
-  const messageData = encoder.encode(message)
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyData,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  )
-
-  const signature = await crypto.subtle.sign("HMAC", key, messageData)
-  const hashArray = Array.from(new Uint8Array(signature))
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("")
+/**
+ * Sign a request body using HMAC-SHA256.
+ * Per docs: message = timestamp + bodyString (compact JSON, no spaces).
+ * Server-side only — HMAC_SECRET never exposed to browser.
+ */
+function sign(timestamp: string, bodyStr: string): string {
+    return createHmac("sha256", HMAC_SECRET)
+        .update(timestamp + bodyStr, "utf8")
+        .digest("hex")
 }
 
 export async function POST(req: Request) {
-  try {
-    const payload = await req.json()
-    const timestamp = Math.floor(Date.now() / 1000).toString()
+    if (!RELAYER_URL || !HMAC_SECRET) {
+        return NextResponse.json(
+            { error: "Backend not configured" },
+            { status: 503 }
+        )
+    }
 
-    const signature = await generateHMACSignature(payload, timestamp)
+    try {
+        const payload = await req.json()
+        const timestamp = Math.floor(Date.now() / 1000).toString()
+        // Must use the SAME bodyString for signing and for the request body
+        const bodyString = JSON.stringify(payload) // compact JSON, no spaces
 
-    const response = await fetch(`${API_BASE_URL}/bridge/initiate`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Signature": signature,
-        "X-Timestamp": timestamp,
-      },
-      body: JSON.stringify(payload),
-    })
+        const signature = sign(timestamp, bodyString)
 
-    const data = await response.json()
-    return NextResponse.json(data, { status: response.status })
-  } catch (error: unknown) {
-    console.error("Bridge API Proxy Error:", error)
-    return NextResponse.json(
-      { error: "Internal Server Error", message: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    )
-  }
+        const response = await fetch(`${RELAYER_URL}/bridge/initiate`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-timestamp": timestamp,
+                "x-signature": signature,
+            },
+            body: bodyString,
+        })
+
+        const data = await response.json()
+        return NextResponse.json(data, { status: response.status })
+    } catch (error: unknown) {
+        console.error("[bridge proxy] error:", error)
+        return NextResponse.json(
+            { error: "Internal Server Error", message: error instanceof Error ? error.message : "Unknown error" },
+            { status: 500 }
+        )
+    }
 }

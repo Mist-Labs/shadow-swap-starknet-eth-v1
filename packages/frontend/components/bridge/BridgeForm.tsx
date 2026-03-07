@@ -1,46 +1,77 @@
-"use client"
-
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
+import Image from "next/image"
 import { motion, AnimatePresence } from "framer-motion"
-import { useAccount, useBalance } from "wagmi"
+import { useAccount as useEvmAccount, useBalance } from "wagmi"
+import { useAccount as useStarknetAccount } from "@starknet-react/core"
 import { formatEther } from "viem"
-import type { Address } from "viem"
 import { toast } from "sonner"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowDownUp, ArrowRight, Shield, Clock, DollarSign, AlertCircle, CheckCircle2 } from "lucide-react"
+import { ArrowDownUp, ArrowRight, Shield, Clock, DollarSign, AlertCircle, CheckCircle2, Wallet } from "lucide-react"
 import BridgeProgress from "./BridgeProgress"
 import { useBridge } from "@/hooks/useBridge"
 import { useIntentStatus } from "@/hooks/useIntentStatus"
-import { SUPPORTED_TOKENS, getTokenInfo } from "@/lib/tokens"
-
+import { getSupportedTokens, getTokenInfo } from "@/lib/tokens"
 
 // Supported networks
 const NETWORKS = [
-    { id: 1, name: "Ethereum", symbol: "ETH", logo: "Ξ", chain: "ethereum" as const },
-    { id: 2, name: "Starknet", symbol: "ETH", logo: "S", chain: "starknet" as const }, // Mock ID for Starknet UI
+    { id: "starknet", name: "Starknet", symbol: "STRK", logo: "S", logoPath: "/Starknet-logo.png", chain: "starknet" as const },
+    { id: "ethereum", name: "Ethereum", symbol: "ETH", logo: "Ξ", logoPath: "/ethereum_logo.png", chain: "ethereum" as const },
 ]
 
 export default function BridgeForm() {
-    const { address, isConnected } = useAccount()
-    // const chainId = useChainId()
-    // const { switchChain } = useSwitchChain() // Commented out
+    // EVM wallet (Reown / wagmi)
+    const { address: evmAddress, isConnected: evmConnected } = useEvmAccount()
+    // Starknet wallet (starknet-react) — account object needed for multicall
+    const { address: starknetAddress, isConnected: starknetConnected, account: starknetAccount } = useStarknetAccount()
 
-    // Form state
-    const [fromNetwork, setFromNetwork] = useState(NETWORKS[0])
-    const [toNetwork, setToNetwork] = useState(NETWORKS[1])
-    const [selectedToken, setSelectedToken] = useState<string>("ETH")
+    // Form state — default FROM starknet
+    const [fromNetwork, setFromNetwork] = useState(NETWORKS[0]) // Starknet
+    const [toNetwork, setToNetwork] = useState(NETWORKS[1])     // Ethereum
+    const [selectedToken, setSelectedToken] = useState<string>("STRK")
     const [amount, setAmount] = useState("")
     const [destinationAddress, setDestinationAddress] = useState("")
     const [useConnectedWallet, setUseConnectedWallet] = useState(true)
     const [showProgress, setShowProgress] = useState(false)
     const [modalClosing, setModalClosing] = useState(false)
 
+    // Determine which wallet is needed & whether it's connected
+    const isFromStarknet = fromNetwork.chain === "starknet"
+    // Source chain wallet (used for signing + refund address)
+    const activeWalletAddress = isFromStarknet ? starknetAddress : evmAddress
+    const isRequiredWalletConnected = isFromStarknet ? starknetConnected : evmConnected
+
+    // Destination chain wallet (used for "Use connected wallet" recipient checkbox)
+    // If bridging StarkNet→Ethereum: destination wallet = EVM address
+    // If bridging Ethereum→StarkNet: destination wallet = StarkNet address
+    const destWalletAddress = isFromStarknet ? evmAddress : starknetAddress
+    const isDestWalletConnected = isFromStarknet ? evmConnected : starknetConnected
+
     // Bridge hook
     const { bridge, reset, isLoading, step, intentId, txHash, error } = useBridge()
+
+    // Direction-aware token list
+    const availableTokens = useMemo(
+        () => getSupportedTokens(fromNetwork.chain),
+        [fromNetwork.chain]
+    )
+
+    // Current token's full info (used on the source chain)
+    const currentTokenInfo = getTokenInfo(selectedToken, fromNetwork.chain)
+
+    // Does selected token require a USDT/USDC→STRK multicall?
+    const needsMulticall = !!(currentTokenInfo?.requiresMulticall)
+
+    // Reset token to first valid option when network direction changes
+    useEffect(() => {
+        if (!availableTokens.includes(selectedToken)) {
+            setSelectedToken(availableTokens[0])
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fromNetwork.chain])
 
     // Real-time intent status tracking
     const { intentStatus } = useIntentStatus({
@@ -49,45 +80,29 @@ export default function BridgeForm() {
         refetchInterval: 5000,
     })
 
-    // Price feed hooks
     // Show progress modal when bridge starts
     useEffect(() => {
         if (isLoading && !showProgress && !modalClosing) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
             setShowProgress(true)
             setModalClosing(false)
         }
     }, [isLoading, showProgress, modalClosing])
 
-    // Auto-close modal when on-chain tx succeeds & refresh queries immediately
+    // Auto-close modal on success
     useEffect(() => {
         if (!showProgress || modalClosing) return
         if (step !== "waiting-solver" && status !== "completed") return
+        if (status === "completed") return
 
-        // If completed, just return for now since there's no backend to refresh
-        if (status === "completed") {
-            return
-        }
-
-        // Only auto-close if in waiting-solver and we want to allow user to leave
-        // But for now, let's keep it open or let user close it. 
-        // Success scenario logic:
         if (step === "waiting-solver") {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
             setModalClosing(true)
-            console.log("✅ On-chain transaction successful!")
-
-            toast.success("Transaction submitted!", {
-                duration: 4000,
-            })
-
+            toast.success("Transaction submitted!", { duration: 4000 })
             const timer = setTimeout(() => {
                 setShowProgress(false)
                 setModalClosing(false)
             }, 2000)
             return () => clearTimeout(timer)
         }
-
     }, [step, showProgress, modalClosing])
 
     // Handle errors
@@ -95,68 +110,56 @@ export default function BridgeForm() {
         if (!showProgress || modalClosing) return
         if (step !== "failed" || !error) return
 
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setModalClosing(true)
-        console.log("❌ Transaction failed:", error)
-        toast.error(error || "Transaction failed. Please try again.", {
-            duration: 5000,
-        })
+        toast.error(error || "Transaction failed. Please try again.", { duration: 5000 })
 
         const timer = setTimeout(() => {
             setShowProgress(false)
             setModalClosing(false)
             reset()
         }, 3000)
-
         return () => clearTimeout(timer)
     }, [step, showProgress, error, reset, modalClosing])
 
-    // Get balance for current network
+    // EVM balance (only available when from EVM)
     const { data: balanceData } = useBalance({
-        address: address,
-        chainId: fromNetwork.id !== 2 ? fromNetwork.id : undefined, // Only fetch for EVM for now via wagmi
+        address: evmAddress,
+        chainId: !isFromStarknet ? 1 : undefined,
     })
 
-    // Calculate fees and amounts
     const calculateFees = () => {
         if (!amount || isNaN(Number(amount))) return { fee: "0", total: "0", receive: "0" }
-
         const amountNum = Number(amount)
-        const feePercent = 0.2 / 100 // 0.2%
-        const fee = amountNum * feePercent
-        const receive = amountNum - fee
-
+        const fee = amountNum * (0.2 / 100)
         return {
             fee: fee.toFixed(6),
             total: amount,
-            receive: receive.toFixed(6),
+            receive: (amountNum - fee).toFixed(6),
         }
     }
 
     const fees = calculateFees()
 
-    // Swap networks
     const handleSwapNetworks = () => {
         const temp = fromNetwork
         setFromNetwork(toNetwork)
         setToNetwork(temp)
-        // Also reset token if not supported? Support same tokens for now.
     }
 
-    // Set max amount
     const handleSetMax = () => {
-        if (balanceData) {
+        if (balanceData && !isFromStarknet) {
             const balance = formatEther(balanceData.value)
-            const maxWithBuffer = Math.max(0, Number(balance) - 0.001).toFixed(6)
-            setAmount(maxWithBuffer)
+            setAmount(Math.max(0, Number(balance) - 0.001).toFixed(6))
         }
     }
 
-    // Handle bridge submit
     const handleBridge = async () => {
-        // Validations
-        if (!isConnected) {
-            toast.error("Please connect your wallet")
+        if (!isRequiredWalletConnected) {
+            toast.error(
+                isFromStarknet
+                    ? "Connect your Starknet wallet to bridge from Starknet"
+                    : "Connect your EVM wallet to bridge from Ethereum"
+            )
             return
         }
 
@@ -165,35 +168,49 @@ export default function BridgeForm() {
             return
         }
 
-        // Network check (simplified for now as Starknet detection logic is separate)
-        // if (chainId !== fromNetwork.id) ...
+        const destination = useConnectedWallet
+            ? destWalletAddress
+            : destinationAddress
 
-        const destination = useConnectedWallet ? address : destinationAddress
         if (!destination) {
-            toast.error("Please enter a destination address")
+            toast.error(
+                useConnectedWallet
+                    ? `Connect your ${isFromStarknet ? "EVM" : "Starknet"} wallet to use as destination address`
+                    : "Please enter a destination address"
+            )
             return
         }
 
         try {
-            // Execute bridge transaction
             await bridge({
                 sourceChain: fromNetwork.chain,
                 destChain: toNetwork.chain,
                 tokenSymbol: selectedToken,
                 amount,
-                recipient: destination as Address,
-                walletAddress: address as Address,
+                recipient: destination,
+                walletAddress: activeWalletAddress as string,
+                // Provide starknet account for multicall (USDT/USDC on StarkNet)
+                starknetAccount: needsMulticall ? starknetAccount ?? undefined : undefined,
             })
-
-            // Reset form after successful bridge trigger
             setAmount("")
             setDestinationAddress("")
-        } catch (error: unknown) {
-            console.error("Bridge error:", error)
-            const errorMessage = error instanceof Error ? error.message : "Bridge failed"
-            toast.error(errorMessage)
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : "Bridge failed"
+            toast.error(msg)
         }
     }
+
+    // Wallet connection status banner
+    const walletBanner = !isRequiredWalletConnected && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-400">
+            <Wallet className="h-4 w-4 shrink-0" />
+            <span>
+                {isFromStarknet
+                    ? "Connect your Starknet wallet (Argent X or Braavos) to bridge from Starknet"
+                    : "Connect your EVM wallet to bridge from Ethereum"}
+            </span>
+        </div>
+    )
 
     return (
         <>
@@ -205,25 +222,40 @@ export default function BridgeForm() {
                         <p className="text-sm text-neutral-400">Transfer tokens across chains privately and instantly</p>
                     </div>
 
+                    {/* Wallet connection banner */}
+                    {walletBanner}
+
                     {/* Network Selection */}
                     <div className="mb-6 space-y-4">
                         {/* From Network */}
                         <div>
                             <Label className="mb-2 text-neutral-300">From</Label>
                             <Select
-                                value={fromNetwork.id.toString()}
-                                onValueChange={(value) => setFromNetwork(NETWORKS.find((n) => n.id === parseInt(value))!)}
+                                value={fromNetwork.id}
+                                onValueChange={(value) => setFromNetwork(NETWORKS.find((n) => n.id === value)!)}
                             >
                                 <SelectTrigger className="h-20 border-neutral-700 bg-neutral-800 py-4 text-white">
                                     <SelectValue>
                                         <div className="flex items-center gap-3">
-                                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500/10">
-                                                <span className="text-sm font-bold text-orange-500">{fromNetwork.logo}</span>
+                                            <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-neutral-800">
+                                                <Image
+                                                    src={fromNetwork.logoPath}
+                                                    alt={fromNetwork.name}
+                                                    width={32}
+                                                    height={32}
+                                                    className="h-8 w-8 rounded-full object-cover"
+                                                />
                                             </div>
                                             <div className="text-left">
                                                 <div className="font-medium text-white">{fromNetwork.name}</div>
                                                 <div className="text-xs text-neutral-500">
-                                                    Balance: {balanceData ? formatEther(balanceData.value).slice(0, 8) : "0"} {fromNetwork.symbol}
+                                                    {isFromStarknet
+                                                        ? starknetAddress
+                                                            ? `${starknetAddress.slice(0, 8)}…${starknetAddress.slice(-4)}`
+                                                            : "Starknet wallet not connected"
+                                                        : balanceData
+                                                            ? `Balance: ${formatEther(balanceData.value).slice(0, 8)} ETH`
+                                                            : "EVM wallet not connected"}
                                                 </div>
                                             </div>
                                         </div>
@@ -231,10 +263,16 @@ export default function BridgeForm() {
                                 </SelectTrigger>
                                 <SelectContent>
                                     {NETWORKS.map((network) => (
-                                        <SelectItem key={network.id} value={network.id.toString()}>
+                                        <SelectItem key={network.id} value={network.id}>
                                             <div className="flex items-center gap-3">
-                                                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500/10">
-                                                    <span className="text-sm font-bold text-orange-500">{network.logo}</span>
+                                                <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-neutral-800">
+                                                    <Image
+                                                        src={network.logoPath}
+                                                        alt={network.name}
+                                                        width={32}
+                                                        height={32}
+                                                        className="h-8 w-8 rounded-full object-cover"
+                                                    />
                                                 </div>
                                                 <span>{network.name}</span>
                                             </div>
@@ -258,14 +296,20 @@ export default function BridgeForm() {
                         <div>
                             <Label className="mb-2 text-neutral-300">To</Label>
                             <Select
-                                value={toNetwork.id.toString()}
-                                onValueChange={(value) => setToNetwork(NETWORKS.find((n) => n.id === parseInt(value))!)}
+                                value={toNetwork.id}
+                                onValueChange={(value) => setToNetwork(NETWORKS.find((n) => n.id === value)!)}
                             >
                                 <SelectTrigger className="h-20 border-neutral-700 bg-neutral-800 py-4 text-white">
                                     <SelectValue>
                                         <div className="flex items-center gap-3">
-                                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500/10">
-                                                <span className="text-sm font-bold text-orange-500">{toNetwork.logo}</span>
+                                            <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-neutral-800">
+                                                <Image
+                                                    src={toNetwork.logoPath}
+                                                    alt={toNetwork.name}
+                                                    width={32}
+                                                    height={32}
+                                                    className="h-8 w-8 rounded-full object-cover"
+                                                />
                                             </div>
                                             <div className="text-left">
                                                 <div className="font-medium text-white">{toNetwork.name}</div>
@@ -276,10 +320,16 @@ export default function BridgeForm() {
                                 </SelectTrigger>
                                 <SelectContent>
                                     {NETWORKS.filter((n) => n.id !== fromNetwork.id).map((network) => (
-                                        <SelectItem key={network.id} value={network.id.toString()}>
+                                        <SelectItem key={network.id} value={network.id}>
                                             <div className="flex items-center gap-3">
-                                                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500/10">
-                                                    <span className="text-sm font-bold text-orange-500">{network.logo}</span>
+                                                <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-neutral-800">
+                                                    <Image
+                                                        src={network.logoPath}
+                                                        alt={network.name}
+                                                        width={32}
+                                                        height={32}
+                                                        className="h-8 w-8 rounded-full object-cover"
+                                                    />
                                                 </div>
                                                 <span>{network.name}</span>
                                             </div>
@@ -297,50 +347,42 @@ export default function BridgeForm() {
                             <SelectTrigger className="h-16 border-neutral-700 bg-neutral-800 text-white">
                                 <SelectValue>
                                     <div className="flex items-center gap-3">
-                                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                                        <img
-                                            src={getTokenInfo(selectedToken, fromNetwork.chain)?.logo || ""}
-                                            alt={selectedToken}
-                                            className="h-10 w-10 rounded-full"
-                                            onError={(e) => {
-                                                e.currentTarget.style.display = "none"
-                                                const fallback = e.currentTarget.nextElementSibling as HTMLElement
-                                                if (fallback) fallback.style.display = "flex"
-                                            }}
-                                        />
-                                        <div className="hidden h-10 w-10 items-center justify-center rounded-full bg-orange-500/10">
-                                            <span className="text-lg font-bold text-orange-500">{selectedToken}</span>
+                                        <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-neutral-800">
+                                            <Image
+                                                src={getTokenInfo(selectedToken, fromNetwork.chain)?.logo || "/ethereum_logo.png"}
+                                                alt={selectedToken}
+                                                width={40}
+                                                height={40}
+                                                className="h-10 w-10 rounded-full object-cover"
+                                            />
                                         </div>
                                         <div className="text-left">
                                             <div className="font-medium text-white">{selectedToken}</div>
-                                            <div className="text-xs text-neutral-500">1:1 Bridge</div>
+                                            <div className="text-xs text-neutral-500">
+                                                {currentTokenInfo?.name || selectedToken}
+                                            </div>
                                         </div>
                                     </div>
                                 </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
-                                {SUPPORTED_TOKENS.map((token) => {
+                                {availableTokens.map((token) => {
                                     const tokenInfo = getTokenInfo(token, fromNetwork.chain)
                                     return (
                                         <SelectItem key={token} value={token}>
                                             <div className="flex items-center gap-3">
-                                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                                <img
-                                                    src={tokenInfo?.logo || ""}
-                                                    alt={token}
-                                                    className="h-10 w-10 rounded-full"
-                                                    onError={(e) => {
-                                                        e.currentTarget.style.display = "none"
-                                                        const fallback = e.currentTarget.nextElementSibling as HTMLElement
-                                                        if (fallback) fallback.style.display = "flex"
-                                                    }}
-                                                />
-                                                <div className="hidden h-10 w-10 items-center justify-center rounded-full bg-orange-500/10">
-                                                    <span className="text-lg font-bold text-orange-500">{token}</span>
+                                                <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-neutral-800">
+                                                    <Image
+                                                        src={tokenInfo?.logo || "/ethereum_logo.png"}
+                                                        alt={token}
+                                                        width={40}
+                                                        height={40}
+                                                        className="h-10 w-10 rounded-full object-cover"
+                                                    />
                                                 </div>
                                                 <div className="text-left">
                                                     <div className="font-medium">{tokenInfo?.name || token}</div>
-                                                    <div className="text-xs text-neutral-500">{token}</div>
+                                                    <div className="text-xs text-neutral-500">{token}{tokenInfo?.requiresMulticall ? " · Swap first" : ""}</div>
                                                 </div>
                                             </div>
                                         </SelectItem>
@@ -350,16 +392,30 @@ export default function BridgeForm() {
                         </Select>
                     </div>
 
+                    {/* Multicall info banner — shown when USDT/USDC on StarkNet selected */}
+                    {needsMulticall && (
+                        <div className="mb-6 flex items-start gap-3 rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-300">
+                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-400" />
+                            <span>
+                                <strong>{selectedToken} on StarkNet</strong> is not natively supported by NEAR.
+                                {" "}Your wallet will prompt for <strong>one transaction</strong> that atomically
+                                swaps {selectedToken} → STRK via AVNU, then sends STRK to the bridge. No stuck funds.
+                            </span>
+                        </div>
+                    )}
+
                     {/* Amount Input */}
                     <div className="mb-6">
                         <div className="mb-2 flex items-center justify-between">
                             <Label className="text-neutral-300">Amount</Label>
-                            <button
-                                onClick={handleSetMax}
-                                className="text-xs text-orange-500 transition-colors hover:text-orange-400"
-                            >
-                                MAX
-                            </button>
+                            {!isFromStarknet && (
+                                <button
+                                    onClick={handleSetMax}
+                                    className="text-xs text-orange-500 transition-colors hover:text-orange-400"
+                                >
+                                    MAX
+                                </button>
+                            )}
                         </div>
                         <div className="relative">
                             <Input
@@ -373,11 +429,6 @@ export default function BridgeForm() {
                                 {selectedToken}
                             </div>
                         </div>
-                        {amount && Number(amount) > 0 && (
-                            <div className="mt-2 flex items-center gap-2 text-sm text-neutral-500">
-                                <>≈ $-- USD</>
-                            </div>
-                        )}
                     </div>
 
                     {/* Destination Address */}
@@ -389,17 +440,37 @@ export default function BridgeForm() {
                                     type="checkbox"
                                     id="useConnected"
                                     checked={useConnectedWallet}
+                                    disabled={!isDestWalletConnected}
                                     onChange={(e) => setUseConnectedWallet(e.target.checked)}
-                                    className="h-4 w-4 rounded border-neutral-700 bg-neutral-800 text-orange-500"
+                                    className="h-4 w-4 rounded border-neutral-700 bg-neutral-800 text-orange-500 disabled:opacity-40"
                                 />
-                                <label htmlFor="useConnected" className="cursor-pointer text-sm text-neutral-400">
-                                    Use connected wallet address
+                                <label
+                                    htmlFor="useConnected"
+                                    className={`cursor-pointer text-sm ${isDestWalletConnected ? "text-neutral-400" : "text-neutral-600"}`}
+                                >
+                                    Use connected {isFromStarknet ? "EVM" : "Starknet"} wallet as recipient
                                 </label>
                             </div>
+
+                            {/* Show the auto-filled address when checkbox is checked */}
+                            {useConnectedWallet && isDestWalletConnected && destWalletAddress && (
+                                <div className="rounded-lg border border-neutral-700 bg-neutral-800/50 px-3 py-2 font-mono text-xs text-neutral-300 break-all">
+                                    {destWalletAddress}
+                                </div>
+                            )}
+
+                            {/* Prompt to connect dest wallet when checkbox is checked but wallet not connected */}
+                            {useConnectedWallet && !isDestWalletConnected && (
+                                <p className="text-xs text-amber-400">
+                                    Connect your {isFromStarknet ? "EVM" : "Starknet"} wallet to auto-fill, or uncheck to enter manually.
+                                </p>
+                            )}
+
+                            {/* Manual input when checkbox is unchecked */}
                             {!useConnectedWallet && (
                                 <Input
                                     type="text"
-                                    placeholder="0x..."
+                                    placeholder={isFromStarknet ? "0x... (Ethereum address)" : "0x... (Starknet address)"}
                                     value={destinationAddress}
                                     onChange={(e) => setDestinationAddress(e.target.value)}
                                     className="border-neutral-700 bg-neutral-800 text-white"
@@ -418,9 +489,7 @@ export default function BridgeForm() {
                             <div className="flex items-center justify-between text-sm">
                                 <span className="text-neutral-400">You send</span>
                                 <div className="text-right">
-                                    <div className="font-medium text-white">
-                                        {amount} {selectedToken}
-                                    </div>
+                                    <div className="font-medium text-white">{amount} {selectedToken}</div>
                                     <div className="text-xs text-neutral-500">≈ $--</div>
                                 </div>
                             </div>
@@ -429,9 +498,7 @@ export default function BridgeForm() {
                                     <DollarSign className="h-3 w-3" />
                                     Fee (0.2%)
                                 </span>
-                                <span className="text-neutral-300">
-                                    {fees.fee} {selectedToken}
-                                </span>
+                                <span className="text-neutral-300">{fees.fee} {selectedToken}</span>
                             </div>
                             <div className="flex items-center justify-between border-t border-neutral-700 pt-3">
                                 <span className="flex items-center gap-1 text-neutral-400">
@@ -439,23 +506,15 @@ export default function BridgeForm() {
                                     You receive
                                 </span>
                                 <div className="text-right">
-                                    <div className="text-lg font-bold text-white">
-                                        {fees.receive} {selectedToken}
-                                    </div>
+                                    <div className="text-lg font-bold text-white">{fees.receive} {selectedToken}</div>
                                 </div>
-                            </div>
-                            <div className="flex items-center justify-between text-xs text-neutral-500">
-                                <span>Exchange rate</span>
-                                <span>
-                                    1 {selectedToken} = $-- USD
-                                </span>
                             </div>
                             <div className="flex items-center justify-between text-xs text-neutral-500">
                                 <span className="flex items-center gap-1">
                                     <Clock className="h-3 w-3" />
                                     Est. time
                                 </span>
-                                <span>10-30 seconds</span>
+                                <span>1–5 minutes (NEAR indexer)</span>
                             </div>
                             <div className="flex items-center gap-2 rounded border border-orange-500/20 bg-orange-500/10 p-2 text-xs text-neutral-500">
                                 <Shield className="h-4 w-4 text-orange-500" />
@@ -467,22 +526,23 @@ export default function BridgeForm() {
                     {/* Bridge Button */}
                     <Button
                         onClick={handleBridge}
-                        disabled={!isConnected || !amount || Number(amount) <= 0 || (isLoading && step !== "waiting-solver")}
+                        disabled={!isRequiredWalletConnected || !amount || Number(amount) <= 0 || (isLoading && step !== "waiting-solver")}
                         className="h-12 w-full bg-orange-500 text-lg font-semibold text-white shadow-lg shadow-orange-500/20 transition-all duration-300 hover:scale-105 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
                     >
-                        {!isConnected ? (
-                            "Connect Wallet"
+                        {!isRequiredWalletConnected ? (
+                            isFromStarknet ? "Connect Starknet Wallet" : "Connect EVM Wallet"
                         ) : (isLoading && step !== "waiting-solver") ? (
                             <>
                                 {step === "generating-params" && "Generating privacy params..."}
-                                {step === "signing-auth" && "Sign authorization..."}
-                                {step === "approving-token" && "Approving token..."}
+                                {step === "fetching-quote" && "Fetching bridge quote..."}
+                                {step === "swapping-to-strk" && "Swapping to STRK via AVNU..."}
+                                {step === "multicall-pending" && "Confirming transaction..."}
                                 {step === "creating-intent" && "Creating intent..."}
                                 {step === "submitting-backend" && "Submitting to backend..."}
                             </>
                         ) : (
                             <>
-                                Bridge Now
+                                {needsMulticall ? "Swap & Bridge" : "Bridge Now"}
                                 <ArrowRight className="ml-2 h-5 w-5" />
                             </>
                         )}
@@ -492,8 +552,8 @@ export default function BridgeForm() {
                     <div className="mt-4 flex items-start gap-2 rounded border border-neutral-700 bg-neutral-800/50 p-3 text-xs text-neutral-500">
                         <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
                         <p>
-                            Bridge transactions are privacy-preserving and auto-claimed. Funds will appear in your destination wallet
-                            in 10-30 seconds.
+                            Bridge transactions are privacy-preserving. Funds will appear in your destination wallet
+                            in 1–5 minutes due to NEAR indexer latency.
                         </p>
                     </div>
                 </Card>
@@ -523,3 +583,4 @@ export default function BridgeForm() {
         </>
     )
 }
+

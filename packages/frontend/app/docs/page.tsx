@@ -92,11 +92,11 @@ export default function DocsPage() {
             <h3 className="mb-4 text-xl font-bold text-white">Bridge Your First Transaction</h3>
             <ol className="space-y-4">
               {[
-                { step: "1", text: "Connect your Web3 wallet (MetaMask, WalletConnect, etc.)" },
-                { step: "2", text: "Select source and destination networks" },
+                { step: "1", text: "Connect your EVM wallet (MetaMask, Coinbase, etc. via Reown) and your Starknet wallet (ArgentX or Braavos)" },
+                { step: "2", text: "Select source and destination networks (Starknet → Ethereum or vice versa)" },
                 { step: "3", text: "Enter amount and destination address" },
-                { step: "4", text: 'Click "Bridge Now" and approve the transaction' },
-                { step: "5", text: "Funds arrive automatically in 10-30 seconds" },
+                { step: "4", text: 'Click "Bridge Now" and approve the transaction in your wallet' },
+                { step: "5", text: "Funds arrive automatically in ~10-30 seconds" },
               ].map((item) => (
                 <li key={item.step} className="flex items-start gap-4">
                   <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-orange-500/10 font-bold text-orange-500">
@@ -167,11 +167,11 @@ export default function DocsPage() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/10">
-                  <span className="font-bold text-orange-500">M</span>
+                  <span className="font-bold text-orange-500">SN</span>
                 </div>
                 <div>
-                  <div className="font-medium text-white">Doesn&apos;t wait for block finality</div>
-                  <div className="text-xs text-neutral-500">Optimized for low fees</div>
+                  <div className="font-medium text-white">Starknet L2</div>
+                  <div className="text-xs text-neutral-500">ZK-rollup · fast, low-cost</div>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -488,7 +488,11 @@ export default function DocsPage() {
             <ul className="space-y-2 text-neutral-300">
               <li className="flex items-start gap-2">
                 <ChevronRight className="mt-1 h-4 w-4 text-orange-500" />
-                <span>Web3 wallet (MetaMask, WalletConnect, Coinbase Wallet, etc.)</span>
+                <span>EVM wallet for Ethereum (MetaMask, Coinbase Wallet, or any WalletConnect-compatible wallet via Reown)</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <ChevronRight className="mt-1 h-4 w-4 text-orange-500" />
+                <span>Starknet wallet for Starknet (ArgentX or Braavos browser extension)</span>
               </li>
               <li className="flex items-start gap-2">
                 <ChevronRight className="mt-1 h-4 w-4 text-orange-500" />
@@ -855,14 +859,36 @@ export default function DocsPage() {
               <div className="prose prose-invert max-w-none">{currentContent.content}</div>
 
               {/* Page Navigation */}
-              <div className="mt-12 flex items-center justify-between border-t border-neutral-800 pt-8">
-                <Button variant="outline" className="border-neutral-700 bg-neutral-900 hover:bg-neutral-800">
-                  ← Previous
-                </Button>
-                <Button variant="outline" className="border-neutral-700 bg-neutral-900 hover:bg-neutral-800">
-                  Next →
-                </Button>
-              </div>
+              {(() => {
+                const allItems = navigation.flatMap((s) => s.items)
+                const currentIndex = allItems.findIndex((i) => i.id === activeSection)
+                const prevItem = currentIndex > 0 ? allItems[currentIndex - 1] : null
+                const nextItem = currentIndex < allItems.length - 1 ? allItems[currentIndex + 1] : null
+                const navigate = (id: string) => {
+                  setActiveSection(id)
+                  window.scrollTo({ top: 0, behavior: "smooth" })
+                }
+                return (
+                  <div className="mt-12 flex items-center justify-between border-t border-neutral-800 pt-8">
+                    <Button
+                      variant="outline"
+                      className="border-neutral-700 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-30"
+                      disabled={!prevItem}
+                      onClick={() => prevItem && navigate(prevItem.id)}
+                    >
+                      ← {prevItem ? prevItem.title : "Previous"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-neutral-700 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-30"
+                      disabled={!nextItem}
+                      onClick={() => nextItem && navigate(nextItem.id)}
+                    >
+                      {nextItem ? nextItem.title : "Next"} →
+                    </Button>
+                  </div>
+                )
+              })()}
             </article>
           </div>
         </div>
