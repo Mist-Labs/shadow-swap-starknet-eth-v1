@@ -30,16 +30,19 @@ export async function getAvnuQuote(
     userAddress: string,
     slippageTolerance: number = 100  // 100 = 1%, per spec §multicall notes
 ): Promise<AvnuQuoteResult> {
-    const res = await fetch(`${AVNU_API}/swap/v2/quotes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            sellTokenAddress,
-            buyTokenAddress: strkAddress,
-            sellAmount,
-            takerAddress: userAddress, // STRK lands back in user wallet
-            slippageTolerance,
-        }),
+    const sellAmountHex = "0x" + BigInt(sellAmount).toString(16)
+    
+    const params = new URLSearchParams({
+        sellTokenAddress,
+        buyTokenAddress: strkAddress,
+        sellAmount: sellAmountHex,
+        takerAddress: userAddress,
+        slippageTolerance: slippageTolerance.toString(),
+    })
+
+    const res = await fetch(`${AVNU_API}/swap/v2/quotes?${params.toString()}`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
     })
 
     if (!res.ok) {
@@ -49,13 +52,14 @@ export async function getAvnuQuote(
 
     const data = await res.json()
 
-    if (!data.quotes || data.quotes.length === 0) {
+    if (!Array.isArray(data) || data.length === 0) {
         throw new Error("No swap route found on AVNU. Insufficient liquidity or amount too small.")
     }
 
-    const best = data.quotes[0]
+    const best = data[0]
     return {
-        strkAmount: best.buyAmount as string,
+        // Convert buyAmount from hex (e.g. "0xf4240") back to base-10 string
+        strkAmount: BigInt(best.buyAmount).toString(10),
         routeCalldata: best.routes[0].calldata as string[],
     }
 }

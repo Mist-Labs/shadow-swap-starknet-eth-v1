@@ -1,10 +1,7 @@
 import { createHmac } from "node:crypto"
 import { NextResponse } from "next/server"
 
-const RELAYER_URL =
-    process.env.NEXT_PUBLIC_RELAYER_URL ||
-    process.env.NEXT_PUBLIC_API_BASE_URL ||
-    ""
+const RELAYER_URL = "https://appropriate-chelsea-mist-labs-1f0a1134.koyeb.app/api/v1"
 
 const HMAC_SECRET = process.env.HMAC_SECRET || ""
 
@@ -32,6 +29,8 @@ export async function POST(req: Request) {
         const timestamp = Math.floor(Date.now() / 1000).toString()
         // Must use the SAME bodyString for signing and for the request body
         const bodyString = JSON.stringify(payload) // compact JSON, no spaces
+        
+        console.log("[bridge proxy] Sending payload to backend:", bodyString)
 
         const signature = sign(timestamp, bodyString)
 
@@ -45,7 +44,18 @@ export async function POST(req: Request) {
             body: bodyString,
         })
 
-        const data = await response.json()
+        const text = await response.text()
+        if (!response.ok) {
+            console.error(`[bridge proxy] Backend returned ${response.status}:`, text)
+        }
+        
+        let data
+        try {
+            data = JSON.parse(text)
+        } catch {
+            data = { error: "Non-JSON response from backend", details: text }
+        }
+
         return NextResponse.json(data, { status: response.status })
     } catch (error: unknown) {
         console.error("[bridge proxy] error:", error)
