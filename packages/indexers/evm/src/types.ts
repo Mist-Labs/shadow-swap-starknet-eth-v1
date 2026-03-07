@@ -26,7 +26,7 @@ export enum Chain {
 
 // Relayer event payload (what we send to backend)
 export interface RelayerEventPayload {
-  event_name: EventType;
+  event_type: EventType;
   chain: string;
   transaction_hash: string;
   block_number: number;
