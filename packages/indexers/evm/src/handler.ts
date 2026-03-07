@@ -64,7 +64,7 @@ export async function transformGoldskyPayload(
   const chainId = deriveChainId(payload);
 
   return {
-    event_name: entity as EventType,
+    event_type: entity as EventType,
     chain:
       chainId === "1" || chainId === "ethereum"
         ? "ethereum"

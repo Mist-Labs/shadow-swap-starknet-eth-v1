@@ -29,7 +29,7 @@ export async function forwardToRelayer(payload: RelayerEventPayload): Promise<vo
   const { signature, timestamp } = generateHMACSignature(payload);
 
   try {
-    console.log(`📤 Forwarding ${payload.event_name} to relayer...`);
+    console.log(`📤 Forwarding ${payload.event_type} to relayer...`);
 
     const response = await axios.post(
       `${config.relayerBaseUrl}/indexer/event`,
