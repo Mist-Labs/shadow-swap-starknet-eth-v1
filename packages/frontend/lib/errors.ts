@@ -364,10 +364,18 @@ export function parseBridgeError(error: unknown): BridgeError {
   if (error instanceof Error) {
     const message = error.message.toLowerCase();
 
-    // Wallet errors
-    if (message.includes("user rejected") || message.includes("user denied")) {
+    // Wallet rejection errors (standard and wallet-specific messages)
+    const isRejection = 
+      message.includes("user rejected") || 
+      message.includes("user denied") || 
+      message.includes("transaction rejected") ||
+      message.includes("rejected by user") ||
+      message.includes("denied transaction signature");
+
+    if (isRejection) {
       return new WalletSignatureRejectedError(error);
     }
+
     if (message.includes("insufficient funds") || message.includes("insufficient balance")) {
       return new InsufficientBalanceError("unknown", "unknown");
     }

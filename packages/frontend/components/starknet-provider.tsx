@@ -8,15 +8,15 @@ import {
     voyager,
 } from "@starknet-react/core"
 import { InjectedConnector } from "starknetkit/injected"
+import { WebWalletConnector } from "starknetkit/webwallet"
 import type { Connector } from "@starknet-react/core"
 
+const ARGENT_WEBWALLET_URL = "https://web.argent.xyz"
+
 const connectors = [
-    new InjectedConnector({
-        options: { id: "argentX", name: "Argent X" },
-    }),
-    new InjectedConnector({
-        options: { id: "braavos", name: "Braavos" },
-    }),
+    new InjectedConnector({ options: { id: "argentX" } }),
+    new InjectedConnector({ options: { id: "braavos" } }),
+    new WebWalletConnector({ url: ARGENT_WEBWALLET_URL }),
 ]
 
 // Use the project's Alchemy Starknet RPC (v0_10 — latest spec, compatible with starknet.js v9)
