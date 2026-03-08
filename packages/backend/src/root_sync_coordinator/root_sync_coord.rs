@@ -183,7 +183,7 @@ impl RootSyncCoordinator {
     pub async fn run(self: Arc<Self>) {
         info!("🔄 RootSyncCoordinator started (event-driven + 5min fallback)");
 
-        let fallback_interval = Duration::from_secs(30);
+        let fallback_interval = Duration::from_secs(300);
 
         loop {
             // Wake on new commitment OR after 5 min — whichever comes first
