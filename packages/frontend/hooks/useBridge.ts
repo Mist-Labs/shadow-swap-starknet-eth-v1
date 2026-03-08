@@ -174,6 +174,15 @@ export function useBridge() {
 
             // ─── Step 6: Submit intent to relayer backend ────────────────────────────────
             setStep("submitting-backend")
+            
+            // For destination token:
+            // If destChain is StarkNet, it's always STRK (only STRK supported as dest on StarkNet for now).
+            // If destChain is Ethereum, it's the target token address on Ethereum.
+            const destTokenInfo = getTokenInfo(params.tokenSymbol, params.destChain)
+            const dest_token = params.destChain === "starknet" 
+                ? STRK_TOKEN.address 
+                : (destTokenInfo?.address || effectiveToken.address)
+
             const initPayload = {
                 intent_id: backendIntentId,
                 source_chain: (params.sourceChain === "ethereum" ? "evm" : "starknet") as "evm" | "starknet",
@@ -188,6 +197,7 @@ export function useBridge() {
                 encrypted_secret,
                 encrypted_nullifier,
                 deposit_address: nearQuote.deposit_address,
+                dest_token, // Added for v2.0 backend
             }
 
             const response = await initiateBridge(initPayload)

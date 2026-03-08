@@ -66,6 +66,7 @@ export interface BridgeInitiateRequest {
     encrypted_secret: string;     // ECIES raw bytes
     encrypted_nullifier: string;  // ECIES raw bytes
     deposit_address: string;      // NEAR deposit address from quote
+    dest_token?: string;          // Optional destination token address (for swaps)
 }
 
 /**
@@ -85,7 +86,7 @@ export interface BridgeInitiateResponse {
  */
 interface BackendIntentResponse {
   intent_id: string;
-  status: string;        // e.g. "pending", "batched", "settled"
+  status: string;        // e.g. "pending", "batched", "settled", "marked_settled"
   source_chain: string;  // "ethereum" | "starknet"
   dest_chain: string;
   token: string;         // single token field (not source_token/dest_token)
