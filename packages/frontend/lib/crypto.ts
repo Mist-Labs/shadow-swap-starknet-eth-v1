@@ -2,9 +2,9 @@ import { keccak256 } from "js-sha3"
 import { hash } from "starknet"
 import { encrypt } from "eciesjs"
 import { hexToBytes, toHex } from "viem"
+import { RELAYER_PUBLIC_KEY } from "./contracts"
 
 // Constants
-const RELAYER_PUBLIC_KEY = process.env.NEXT_PUBLIC_RELAYER_PUBKEY || ""
 const DOMAIN = "ShadowSwap.ViewKey.v1"
 
 /**

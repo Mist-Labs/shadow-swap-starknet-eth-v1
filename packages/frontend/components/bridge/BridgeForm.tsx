@@ -2,7 +2,9 @@ import { useState, useEffect, useMemo } from "react"
 import Image from "next/image"
 import { motion, AnimatePresence } from "framer-motion"
 import { useAccount as useEvmAccount, useBalance } from "wagmi"
-import { useAccount as useStarknetAccount } from "@starknet-react/core"
+import { useAccount as useStarknetAccount, useDisconnect as useStarknetDisconnect } from "@starknet-react/core"
+import { useAppKit } from "@reown/appkit/react"
+import { handleWebwalletLogoutEvent } from "starknetkit/webwallet"
 import { formatEther } from "viem"
 import { toast } from "sonner"
 import { Card } from "@/components/ui/card"
@@ -12,6 +14,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ArrowDownUp, ArrowRight, Shield, Clock, DollarSign, AlertCircle, CheckCircle2, Wallet } from "lucide-react"
 import BridgeProgress from "./BridgeProgress"
+import StarknetConnectModal from "./StarknetConnectModal"
 import { useBridge } from "@/hooks/useBridge"
 import { useIntentStatus } from "@/hooks/useIntentStatus"
 import { getSupportedTokens, getTokenInfo } from "@/lib/tokens"
@@ -25,8 +28,12 @@ const NETWORKS = [
 export default function BridgeForm() {
     // EVM wallet (Reown / wagmi)
     const { address: evmAddress, isConnected: evmConnected } = useEvmAccount()
-    // Starknet wallet (starknet-react) — account object needed for multicall
+    // Starknet wallet (starknet-react)
     const { address: starknetAddress, isConnected: starknetConnected, account: starknetAccount } = useStarknetAccount()
+    const { disconnect: disconnectStarknet } = useStarknetDisconnect()
+
+    // Reown AppKit (EVM)
+    const { open: openEvmModal } = useAppKit()
 
     // Form state — default FROM starknet
     const [fromNetwork, setFromNetwork] = useState(NETWORKS[0]) // Starknet
@@ -73,6 +80,11 @@ export default function BridgeForm() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fromNetwork.chain])
 
+    // Handle Starknet WebWallet logout event (per demo-dapp-starknet current patterns)
+    useEffect(() => {
+        handleWebwalletLogoutEvent(disconnectStarknet)
+    }, [disconnectStarknet])
+
     // Real-time intent status tracking
     const { intentStatus } = useIntentStatus({
         intentId: intentId,
@@ -91,19 +103,19 @@ export default function BridgeForm() {
     // Auto-close modal on success
     useEffect(() => {
         if (!showProgress || modalClosing) return
-        if (step !== "waiting-solver" && status !== "completed") return
-        if (status === "completed") return
 
-        if (step === "waiting-solver") {
+        // Wait until intent is actually COMPLETED on the backend
+        if (intentStatus === "completed") {
             setModalClosing(true)
-            toast.success("Transaction submitted!", { duration: 4000 })
+            toast.success("Bridge successfully completed!", { duration: 4000 })
             const timer = setTimeout(() => {
                 setShowProgress(false)
                 setModalClosing(false)
-            }, 2000)
+                reset()
+            }, 3000)
             return () => clearTimeout(timer)
         }
-    }, [step, showProgress, modalClosing])
+    }, [intentStatus, showProgress, modalClosing, reset])
 
     // Handle errors
     useEffect(() => {
@@ -189,8 +201,10 @@ export default function BridgeForm() {
                 amount,
                 recipient: destination,
                 walletAddress: activeWalletAddress as string,
-                // Provide starknet account for multicall (USDT/USDC on StarkNet)
-                starknetAccount: needsMulticall ? starknetAccount ?? undefined : undefined,
+                // Provide starknet account natively for both multicalls and direct STRK transfers
+                starknetAccount: starknetAccount ?? undefined,
+                // Provide EVM address to enable dual-wallet view key derivation
+                evmAddress: evmAddress ?? undefined,
             })
             setAmount("")
             setDestinationAddress("")
@@ -202,13 +216,25 @@ export default function BridgeForm() {
 
     // Wallet connection status banner
     const walletBanner = !isRequiredWalletConnected && (
-        <div className="mb-4 flex items-center gap-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-400">
-            <Wallet className="h-4 w-4 shrink-0" />
-            <span>
-                {isFromStarknet
-                    ? "Connect your Starknet wallet (Argent X or Braavos) to bridge from Starknet"
-                    : "Connect your EVM wallet to bridge from Ethereum"}
-            </span>
+        <div className="mb-6 flex flex-col gap-3 rounded-xl border border-orange-500/20 bg-orange-500/5 p-4">
+            <div className="flex items-center gap-3 text-sm text-neutral-400">
+                <Wallet className="h-4 w-4 shrink-0 text-orange-500" />
+                <span>
+                    {isFromStarknet
+                        ? "Connecting a Starknet wallet is required to bridge from Starknet"
+                        : "Connecting an EVM wallet is required to bridge from Ethereum"}
+                </span>
+            </div>
+            {isFromStarknet ? (
+                <StarknetConnectModal className="w-full sm:w-auto" />
+            ) : (
+                <Button
+                    onClick={() => openEvmModal()}
+                    className="w-full sm:w-auto bg-orange-500 hover:bg-orange-600 text-white"
+                >
+                    Connect EVM Wallet
+                </Button>
+            )}
         </div>
     )
 
@@ -525,21 +551,31 @@ export default function BridgeForm() {
 
                     {/* Bridge Button */}
                     <Button
-                        onClick={handleBridge}
-                        disabled={!isRequiredWalletConnected || !amount || Number(amount) <= 0 || (isLoading && step !== "waiting-solver")}
+                        onClick={!isRequiredWalletConnected ? (isFromStarknet ? undefined : () => openEvmModal()) : handleBridge}
+                        disabled={(isRequiredWalletConnected && (!amount || Number(amount) <= 0)) || (isLoading && step !== "waiting-solver")}
+                        asChild={!isRequiredWalletConnected && isFromStarknet}
                         className="h-12 w-full bg-orange-500 text-lg font-semibold text-white shadow-lg shadow-orange-500/20 transition-all duration-300 hover:scale-105 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
                     >
                         {!isRequiredWalletConnected ? (
-                            isFromStarknet ? "Connect Starknet Wallet" : "Connect EVM Wallet"
+                            isFromStarknet ? (
+                                <StarknetConnectModal className="w-full h-full shadow-none hover:scale-100" buttonText="Connect Starknet Wallet" />
+                            ) : (
+                                "Connect EVM Wallet"
+                            )
                         ) : (isLoading && step !== "waiting-solver") ? (
-                            <>
+                            <div className="flex items-center gap-2">
+                                <motion.div
+                                    animate={{ rotate: 360 }}
+                                    transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                                    className="h-4 w-4 border-2 border-white/20 border-t-white rounded-full"
+                                />
                                 {step === "generating-params" && "Generating privacy params..."}
                                 {step === "fetching-quote" && "Fetching bridge quote..."}
                                 {step === "swapping-to-strk" && "Swapping to STRK via AVNU..."}
                                 {step === "multicall-pending" && "Confirming transaction..."}
                                 {step === "creating-intent" && "Creating intent..."}
                                 {step === "submitting-backend" && "Submitting to backend..."}
-                            </>
+                            </div>
                         ) : (
                             <>
                                 {needsMulticall ? "Swap & Bridge" : "Bridge Now"}

@@ -54,9 +54,9 @@ export type IntentStatus =
  */
 export interface BridgeInitiateRequest {
     intent_id: string;            // 0x + 64 hex (crypto.randomBytes(32))
-    source_chain: ChainType;      // "ethereum" | "starknet"
-    dest_chain: ChainType;
-    token: string;                // Source token address (STRK/ETH for StarkNet multicall outputs)
+    source_chain: "evm" | "starknet";
+    dest_chain: "evm" | "starknet";
+    token: string;                // Source token contract address (STRK/ETH for StarkNet multicall outputs)
     amount: string;               // Decimal string, smallest unit
     commitment: string;           // 0x + 64 hex — 5-parameter hash
     nullifier_hash: string;       // 0x + 64 hex
@@ -66,7 +66,6 @@ export interface BridgeInitiateRequest {
     encrypted_secret: string;     // ECIES raw bytes
     encrypted_nullifier: string;  // ECIES raw bytes
     deposit_address: string;      // NEAR deposit address from quote
-    refund_address: string;       // User's source-chain address
 }
 
 /**
