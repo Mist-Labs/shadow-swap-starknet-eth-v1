@@ -117,11 +117,24 @@ export function generateStarknetPrivacyParams({
     const secretFelt = BigInt(_secret)
     const nullifierFelt = BigInt(_nullifier)
     const tokenFelt = BigInt(token)
-    const amountFelt = BigInt(amount)
+    
+    // Split u256 amount into low/high 128-bit values for Cairo compatibility
+    const amountBI = BigInt(amount)
+    const mask128 = (BigInt(1) << BigInt(128)) - BigInt(1)
+    const amountLow = amountBI & mask128
+    const amountHigh = amountBI >> BigInt(128)
 
+    // commitment = poseidon_hash_many([secret, nullifier, amount_low, amount_high, token, destChain])
     const commitment =
         "0x" +
-        hash.computePoseidonHashOnElements([secretFelt, nullifierFelt, amountFelt, tokenFelt, DEST_CHAIN_ID])
+        hash.computePoseidonHashOnElements([
+            secretFelt,
+            nullifierFelt,
+            amountLow,
+            amountHigh,
+            tokenFelt,
+            DEST_CHAIN_ID
+        ])
             .replace("0x", "")
             .padStart(64, "0")
 
