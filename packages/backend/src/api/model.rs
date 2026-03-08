@@ -19,6 +19,7 @@ pub struct InitiateBridgeRequest {
     pub deposit_address: Option<String>,
     pub encrypted_secret: String,
     pub encrypted_nullifier: String,
+    pub dest_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

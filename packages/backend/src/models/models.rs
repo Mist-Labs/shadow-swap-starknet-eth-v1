@@ -58,6 +58,7 @@ pub struct ShadowIntent {
     // ECIES-encrypted privacy params (decrypted at settlement time)
     pub encrypted_secret: Option<String>,
     pub encrypted_nullifier: Option<String>,
+    pub dest_token: Option<String>,
 }
 
 // ===== REMOTE ROOT SNAPSHOT =====

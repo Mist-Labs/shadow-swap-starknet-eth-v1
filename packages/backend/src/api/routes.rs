@@ -1,10 +1,9 @@
-use actix_web::{HttpRequest, HttpResponse, Responder, get, post, web};
+use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use chrono::Utc;
 use serde_json::json;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    AppState,
     api::{
         helper::{
             handle_commitment_added, handle_marked_settled_event, handle_root_updated_event,
@@ -17,6 +16,7 @@ use crate::{
         },
     },
     models::models::{ChainId, IntentStatus, IntentStore, ShadowIntent},
+    AppState,
 };
 
 // ============================================================================
@@ -135,7 +135,10 @@ pub async fn initiate_bridge(
     }
 
     // Fix #5: Reject duplicate nullifier_hash at intake (before DB write)
-    match app_state.database.nullifier_hash_exists(&request.nullifier_hash) {
+    match app_state
+        .database
+        .nullifier_hash_exists(&request.nullifier_hash)
+    {
         Ok(true) => {
             warn!(
                 "Duplicate nullifier_hash rejected at intake: {}",
@@ -186,6 +189,7 @@ pub async fn initiate_bridge(
         encrypted_nullifier: Some(request.encrypted_nullifier.clone()),
         created_at: now,
         updated_at: now,
+        dest_token: request.dest_token.clone(),
     };
 
     if let Err(e) = app_state.database.save_intent(&intent) {
@@ -247,9 +251,7 @@ pub async fn list_intents(
     app_state: web::Data<AppState>,
     query: web::Query<std::collections::HashMap<String, String>>,
 ) -> impl Responder {
-    let status_filter = query
-        .get("status")
-        .and_then(|s| IntentStatus::from_str(s));
+    let status_filter = query.get("status").and_then(|s| IntentStatus::from_str(s));
 
     match status_filter {
         Some(status) => match app_state.database.get_intents_by_status(status) {
@@ -403,8 +405,8 @@ pub async fn indexer_event(
 
     match request.event_type.as_str() {
         "commitment_added" => handle_commitment_added(&app_state, &request).await,
-        "settled" => handle_settled_event(&app_state, &request).await,
-        "marked_settled" => handle_marked_settled_event(&app_state, &request).await,
+        "settled" | "settled_with_swap" => handle_settled_event(&app_state, &request).await,
+        "marked_settled" | "intent_marked_settled" => handle_marked_settled_event(&app_state, &request).await,
         "merkle_root_updated" => handle_root_updated_event(&app_state, &request).await,
         _ => {
             warn!("Unknown event type: {}", request.event_type);

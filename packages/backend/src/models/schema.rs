@@ -23,6 +23,7 @@ diesel::table! {
         #[max_length = 66]
         leaf -> Varchar,
         created_at -> Timestamptz,
+        leaf_index -> Int4,
     }
 }
 
@@ -54,7 +55,7 @@ diesel::table! {
         source_chain -> Varchar,
         #[max_length = 32]
         dest_chain -> Varchar,
-        #[max_length = 66]
+        #[max_length = 512]
         encrypted_recipient -> Varchar,
         #[max_length = 66]
         token -> Varchar,
@@ -74,12 +75,13 @@ diesel::table! {
         settle_tx_hash -> Nullable<Varchar>,
         #[max_length = 66]
         source_settle_tx_hash -> Nullable<Varchar>,
+        created_at -> Int8,
+        updated_at -> Int8,
         #[max_length = 512]
         encrypted_secret -> Nullable<Varchar>,
         #[max_length = 512]
         encrypted_nullifier -> Nullable<Varchar>,
-        created_at -> Int8,
-        updated_at -> Int8,
+        dest_token -> Nullable<Text>,
     }
 }
 

@@ -11,11 +11,11 @@ use tracing::{info, warn};
 
 use crate::models::models::{ChainId, RemoteRootSnapshot};
 
-// Generate contract bindings from ABI
 abigen!(
     ShadowSettlementContract,
     r#"[
         function addToPendingBatch(bytes32 commitment, bytes32 nearIntentsId, bytes32 viewKey) external
+        function processBatchIfTimeout() external
         function markSettled(bytes32 commitment, bytes32 nullifierHash) external
         function syncMerkleRoot(string calldata chainId, bytes32 root, uint256 leafCount) external
         function verifyRemoteRoot(string calldata chainId, uint256 snapshotIndex) external
@@ -26,6 +26,7 @@ abigen!(
         function commitmentExists(bytes32 commitment) external view returns (bool)
         function getLatestRemoteRoot(string calldata chainId) external view returns (bytes32 root, uint256 leafCount, uint64 syncedAt, bool verified)
         function getRemoteRootCount(string calldata chainId) external view returns (uint256)
+        function getPendingBatchInfo() external view returns (uint256 count, uint64 firstSubmissionTime, uint256 timeRemaining)
         function setTokenWhitelist(address token, bool whitelisted) external
         function pause() external
         function unpause() external
@@ -79,7 +80,7 @@ impl EvmRelayer {
         })
     }
 
-    // ===== SOURCE SIDE: Add commitment to pending batch =====
+    // ===== SOURCE SIDE =====
 
     pub async fn add_to_pending_batch(
         &self,
@@ -94,6 +95,15 @@ impl EvmRelayer {
 
         info!("📝 [EVM] Adding commitment to pending batch");
 
+        // Pre-check: if commitment already exists on-chain, skip submission
+        if self.commitment_exists(commitment).await? {
+            warn!(
+                "⚠️  [EVM] Commitment {} already exists on-chain — skipping batch add",
+                &commitment[..18.min(commitment.len())]
+            );
+            return Ok(H256::zero());
+        }
+
         let commitment_bytes: [u8; 32] = hex_to_bytes32(commitment)?;
         let near_id_bytes: [u8; 32] = hex_to_bytes32_padded(&near_intents_id.replace('-', ""))?;
         let view_key_bytes: [u8; 32] = hex_to_bytes32(view_key)?;
@@ -105,11 +115,41 @@ impl EvmRelayer {
             .await?
             .ok_or_else(|| anyhow!("Transaction dropped"))?;
 
-        info!("✅ Transaction confirmed: {:?}", tx.transaction_hash);
+        info!("✅ [EVM] Commitment added, tx: {:?}", tx.transaction_hash);
         Ok(tx.transaction_hash)
     }
 
-    // ===== SOURCE SIDE: Mark intent as settled =====
+    pub async fn process_batch_if_timeout(&self) -> Result<H256> {
+        let contract = self
+            .contract
+            .as_ref()
+            .ok_or_else(|| anyhow!("No wallet configured"))?;
+
+        info!("⏰ [EVM] Processing batch (timeout reached)");
+
+        let tx = contract
+            .process_batch_if_timeout()
+            .send()
+            .await?
+            .await?
+            .ok_or_else(|| anyhow!("Transaction dropped"))?;
+
+        info!("✅ [EVM] Batch processed, tx: {:?}", tx.transaction_hash);
+        Ok(tx.transaction_hash)
+    }
+
+    pub async fn get_pending_batch_info(&self) -> Result<(u64, u64, u64)> {
+        let contract = ShadowSettlementContract::new(self.contract_address, self.provider.clone());
+
+        let (count, first_submission_time, time_remaining) =
+            contract.get_pending_batch_info().call().await?;
+
+        Ok((
+            count.as_u64(),
+            first_submission_time,
+            time_remaining.as_u64(),
+        ))
+    }
 
     pub async fn mark_settled(&self, commitment: &str, nullifier_hash: &str) -> Result<H256> {
         let contract = self
@@ -133,7 +173,7 @@ impl EvmRelayer {
         Ok(tx.transaction_hash)
     }
 
-    // ===== CROSS-CHAIN SYNC: Sync remote Merkle root =====
+    // ===== CROSS-CHAIN SYNC =====
 
     pub async fn sync_merkle_root(
         &self,
@@ -161,8 +201,6 @@ impl EvmRelayer {
         Ok(tx.transaction_hash)
     }
 
-    // ===== CROSS-CHAIN SYNC: Verify remote root =====
-
     pub async fn verify_remote_root(&self, chain_id: &str, snapshot_index: u64) -> Result<H256> {
         let contract = self
             .contract
@@ -182,10 +220,8 @@ impl EvmRelayer {
         Ok(tx.transaction_hash)
     }
 
-    // ===== DESTINATION SIDE: Settle and release tokens =====
-    //
-    // ⚠️ NO PROOF PARAMETERS - Relayer verified proof off-chain!
-    // Contract trusts authorized relayer
+    // ===== DESTINATION SIDE =====
+
     pub async fn settle_and_release(
         &self,
         intent_id: &str,
@@ -227,10 +263,6 @@ impl EvmRelayer {
         Ok(tx.transaction_hash)
     }
 
-    // ===== OWNER RESCUE (onlyOwner fallback) =====
-    //
-    // Called when normal settlement fails after timeout.
-    // Uses EVM_OWNER_PRIVATE_KEY — bypasses proof, transfers tokens directly.
     pub async fn rescue_tokens(&self, token: &str, recipient: &str, amount: &str) -> Result<H256> {
         let contract = self
             .owner_contract
@@ -268,14 +300,12 @@ impl EvmRelayer {
 
     pub async fn get_merkle_root(&self) -> Result<String> {
         let contract = ShadowSettlementContract::new(self.contract_address, self.provider.clone());
-
         let root = contract.get_merkle_root().call().await?;
         Ok(format!("0x{}", hex::encode(root)))
     }
 
     pub async fn is_nullifier_used(&self, nullifier_hash: &str) -> Result<bool> {
         let contract = ShadowSettlementContract::new(self.contract_address, self.provider.clone());
-
         let nullifier_bytes: [u8; 32] = hex_to_bytes32(nullifier_hash)?;
         let used = contract.is_nullifier_used(nullifier_bytes).call().await?;
         Ok(used)
@@ -283,7 +313,6 @@ impl EvmRelayer {
 
     pub async fn commitment_exists(&self, commitment: &str) -> Result<bool> {
         let contract = ShadowSettlementContract::new(self.contract_address, self.provider.clone());
-
         let commitment_bytes: [u8; 32] = hex_to_bytes32(commitment)?;
         let exists = contract.commitment_exists(commitment_bytes).call().await?;
         Ok(exists)
@@ -298,7 +327,7 @@ impl EvmRelayer {
             .await?;
 
         Ok(RemoteRootSnapshot {
-            chain_id: ChainId::Starknet, // Remote chain for EVM is StarkNet
+            chain_id: ChainId::Starknet,
             root: format!("0x{}", hex::encode(root)),
             leaf_count: leaf_count.as_u64(),
             synced_at,
@@ -308,19 +337,15 @@ impl EvmRelayer {
 
     pub async fn get_remote_root_count(&self, chain_id: &str) -> Result<u64> {
         let contract = ShadowSettlementContract::new(self.contract_address, self.provider.clone());
-
         let count = contract
             .get_remote_root_count(chain_id.to_string())
             .call()
             .await?;
-
         Ok(count.as_u64())
     }
 
     // ===== TOKEN TRANSFER VERIFICATION =====
-    //
-    // Simpler verification: just check if TX exists and succeeded
-    // Used for cross-chain swaps where token changes (e.g., STRK -> USDT)
+
     pub async fn verify_transaction_exists(&self, tx_hash: &str) -> Result<bool> {
         info!(
             "🔍 [EVM] Verifying TX exists: {}",
@@ -343,7 +368,6 @@ impl EvmRelayer {
         Ok(success)
     }
 
-    // Verify that NEAR actually delivered tokens by checking Transfer event
     pub async fn verify_transfer_event(
         &self,
         tx_hash: &str,
@@ -364,34 +388,21 @@ impl EvmRelayer {
 
         let expected_token_addr: Address = expected_token.parse()?;
         let expected_amount_u256: U256 = U256::from_dec_str(expected_amount)?;
-
-        // Look for Transfer event: Transfer(address indexed from, address indexed to, uint256 value)
         let transfer_topic = ethers::core::utils::keccak256("Transfer(address,address,uint256)");
 
         for log in receipt.logs {
             if log.address != expected_token_addr {
                 continue;
             }
-
             if log.topics.is_empty() || log.topics[0] != H256::from_slice(&transfer_topic) {
                 continue;
             }
-
-            // topics[1] = from (indexed)
-            // topics[2] = to (indexed)
-            // data = amount (not indexed)
-
             if log.topics.len() >= 3 {
                 let to_address = Address::from(log.topics[2]);
-
-                // Verify transfer is TO our contract
                 if to_address != self.contract_address {
                     continue;
                 }
-
-                // Decode amount from data
                 let amount = U256::from_big_endian(&log.data);
-
                 if amount >= expected_amount_u256 {
                     info!("✅ Transfer verified: {} tokens to contract", amount);
                     return Ok(true);
@@ -403,10 +414,6 @@ impl EvmRelayer {
         Ok(false)
     }
 
-    /// Extract the actual ERC20 token address and amount delivered to this contract
-    /// from an EVM transaction receipt. Used by the rescue path to determine what
-    /// NEAR actually delivered (NEAR swaps source token → dest token, so the
-    /// delivered token differs from `intent.token` which is the source chain token).
     pub async fn get_delivered_token_and_amount(&self, tx_hash: &str) -> Result<(String, String)> {
         info!(
             "🔍 [EVM] Reading delivered token/amount from tx: {}",
@@ -429,7 +436,6 @@ impl EvmRelayer {
 
         let transfer_topic = ethers::core::utils::keccak256("Transfer(address,address,uint256)");
 
-        // ── ERC20: look for Transfer event to settlement contract (unchanged) ──
         for log in &receipt.logs {
             if log.topics.len() < 3 {
                 continue;
@@ -437,12 +443,10 @@ impl EvmRelayer {
             if log.topics[0] != H256::from_slice(&transfer_topic) {
                 continue;
             }
-
             let to_address = Address::from(log.topics[2]);
             if to_address != self.contract_address {
                 continue;
             }
-
             let token_addr = log.address;
             let amount = U256::from_big_endian(&log.data);
 
@@ -450,11 +454,9 @@ impl EvmRelayer {
                 "✅ [EVM] ERC20 delivered: token={:?} amount={} to settlement contract",
                 token_addr, amount
             );
-
             return Ok((format!("{:?}", token_addr), amount.to_string()));
         }
 
-        // ── Native ETH fallback: check tx.value sent directly to settlement contract ──
         let tx = self
             .provider
             .get_transaction(hash)
@@ -476,7 +478,7 @@ impl EvmRelayer {
         ))
     }
 
-    // ===== ADMIN FUNCTIONS =====
+    // ===== ADMIN =====
 
     pub async fn set_token_whitelist(&self, token: &str, whitelisted: bool) -> Result<H256> {
         let contract = self
@@ -485,7 +487,6 @@ impl EvmRelayer {
             .ok_or_else(|| anyhow!("No wallet configured"))?;
 
         let token_addr: Address = token.parse()?;
-
         let tx = contract
             .set_token_whitelist(token_addr, whitelisted)
             .send()
@@ -536,8 +537,6 @@ impl EvmRelayer {
         Ok(())
     }
 
-    // ===== HELPER FUNCTIONS =====
-
     pub fn chain_id(&self) -> ChainId {
         self.chain_id
     }
@@ -547,16 +546,12 @@ impl EvmRelayer {
     }
 }
 
-// ===== HELPER: Convert hex string to bytes32 =====
-
 fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
     let hex = hex.trim_start_matches("0x");
     let bytes = hex::decode(hex).context("Invalid hex string")?;
-
     if bytes.len() != 32 {
         return Err(anyhow!("Expected 32 bytes, got {}", bytes.len()));
     }
-
     let mut array = [0u8; 32];
     array.copy_from_slice(&bytes);
     Ok(array)
@@ -595,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_hex_to_bytes32_invalid_length() {
-        let hex = "0x1234"; // Too short
+        let hex = "0x1234";
         let result = hex_to_bytes32(hex);
         assert!(result.is_err());
     }

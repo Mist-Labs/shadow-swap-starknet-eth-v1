@@ -15,18 +15,13 @@ import { hash, uint256 } from "starknet";
 import { forwardToRelayer, validateApiVariables } from "../utils/apiAuth.js";
 import { eq, desc } from "drizzle-orm";
 
-// All events emitted by ShadowSettlement (ShadowSwap Cairo contract).
-// Key formula: sn_keccak(PascalCaseName) — confirmed on-chain.
-// Indexed = stored in DB + forwarded to relayer.
-// Ignored = emitted by contract but not relevant to relayer lifecycle.
 const ALL_EVENTS = {
-  // --- Indexed ---
   CommitmentAdded:      { indexed: true },
   BatchProcessed:       { indexed: true },
   MerkleRootUpdated:    { indexed: true },
   IntentSettled:        { indexed: true },
   IntentMarkedSettled:  { indexed: true },
-  // --- Ignored ---
+  IntentSettledWithSwap: { indexed: true },
   RemoteRootSynced:         { indexed: false },
   RemoteRootVerified:       { indexed: false },
   RelayerStatusChanged:     { indexed: false },
@@ -37,10 +32,6 @@ const ALL_EVENTS = {
   Unpaused:                 { indexed: false },
 } as const;
 
-// Build selector → event name map at startup (sn_keccak of each name).
-// sn_keccak yields a 250-bit value — may be fewer than 64 hex chars.
-// Apibara always zero-pads to 64 hex chars (32 bytes), so we normalise
-// every selector to that canonical form before storing and before lookup.
 const pad64 = (sel: string) => "0x" + sel.slice(2).padStart(64, "0");
 
 const SELECTOR_TO_NAME: Record<string, string> = {};
@@ -49,14 +40,13 @@ for (const name of Object.keys(ALL_EVENTS)) {
   SELECTOR_TO_NAME[sel] = name;
 }
 
-// Typed keys for the five indexed events.
-// Must use pad64() to match apibara's zero-padded 64-char selector format.
 const EVENT_KEYS = {
-  CommitmentAdded:     pad64(hash.getSelectorFromName("CommitmentAdded")),
-  IntentSettled:       pad64(hash.getSelectorFromName("IntentSettled")),
-  IntentMarkedSettled: pad64(hash.getSelectorFromName("IntentMarkedSettled")),
-  MerkleRootUpdated:   pad64(hash.getSelectorFromName("MerkleRootUpdated")),
-  BatchProcessed:      pad64(hash.getSelectorFromName("BatchProcessed")),
+  CommitmentAdded:       pad64(hash.getSelectorFromName("CommitmentAdded")),
+  IntentSettled:         pad64(hash.getSelectorFromName("IntentSettled")),
+  IntentSettledWithSwap: pad64(hash.getSelectorFromName("IntentSettledWithSwap")),
+  IntentMarkedSettled:   pad64(hash.getSelectorFromName("IntentMarkedSettled")),
+  MerkleRootUpdated:     pad64(hash.getSelectorFromName("MerkleRootUpdated")),
+  BatchProcessed:        pad64(hash.getSelectorFromName("BatchProcessed")),
 };
 
 interface CommitmentAddedEvent {
@@ -68,6 +58,16 @@ interface IntentSettledEvent {
   nullifier_hash: string;
   token: string;
   amount: bigint;
+  timestamp: bigint;
+}
+
+interface IntentSettledWithSwapEvent {
+  intent_id: string;
+  nullifier_hash: string;
+  delivered_token: string;
+  delivered_amount: bigint;
+  dest_token: string;
+  dest_amount: bigint;
   timestamp: bigint;
 }
 
@@ -121,15 +121,11 @@ function decodeCommitmentAdded(event: any, logger: any): CommitmentAddedEvent | 
     if (!keys || keys.length < 2) {
       throw new Error(`Expected >=2 keys, got ${keys?.length ?? 0}`);
     }
-    // keys: [selector, commitment]
     const decoded = { commitment: keys[1] };
     logger.info(`[DECODE] CommitmentAdded commitment=${decoded.commitment}`);
     return decoded;
   } catch (error: any) {
-    logger.error(`[DECODE ERROR] CommitmentAdded: ${error?.message}`, {
-      keys: event.keys,
-      data: event.data,
-    });
+    logger.error(`[DECODE ERROR] CommitmentAdded: ${error?.message}`, { keys: event.keys, data: event.data });
     return null;
   }
 }
@@ -153,10 +149,39 @@ function decodeIntentSettled(event: any, logger: any): IntentSettledEvent | null
     logger.info(`[DECODE] IntentSettled intent_id=${decoded.intent_id} nullifier=${decoded.nullifier_hash} token=${decoded.token} amount=${decoded.amount}`);
     return decoded;
   } catch (error: any) {
-    logger.error(`[DECODE ERROR] IntentSettled: ${error?.message}`, {
-      keys: event.keys,
-      data: event.data,
-    });
+    logger.error(`[DECODE ERROR] IntentSettled: ${error?.message}`, { keys: event.keys, data: event.data });
+    return null;
+  }
+}
+
+function decodeIntentSettledWithSwap(event: any, logger: any): IntentSettledWithSwapEvent | null {
+  try {
+    const { keys, data } = event;
+    if (!keys || keys.length < 3 || !data || data.length < 7) {
+      throw new Error(`Expected keys>=3 data>=7, got keys=${keys?.length} data=${data?.length}`);
+    }
+    // keys: [selector, intent_id, nullifier_hash]
+    // data: [delivered_token, delivered_amount_low, delivered_amount_high,
+    //        dest_token, dest_amount_low, dest_amount_high, timestamp]
+    const delivered_amount = uint256.uint256ToBN({ low: data[1], high: data[2] });
+    const dest_amount      = uint256.uint256ToBN({ low: data[4], high: data[5] });
+    const decoded = {
+      intent_id:        keys[1],
+      nullifier_hash:   keys[2],
+      delivered_token:  data[0],
+      delivered_amount,
+      dest_token:       data[3],
+      dest_amount,
+      timestamp:        BigInt(data[6]),
+    };
+    logger.info(
+      `[DECODE] IntentSettledWithSwap intent_id=${decoded.intent_id}` +
+      ` delivered=${decoded.delivered_amount} ${decoded.delivered_token}` +
+      ` → dest=${decoded.dest_amount} ${decoded.dest_token}`
+    );
+    return decoded;
+  } catch (error: any) {
+    logger.error(`[DECODE ERROR] IntentSettledWithSwap: ${error?.message}`, { keys: event.keys, data: event.data });
     return null;
   }
 }
@@ -177,10 +202,7 @@ function decodeIntentMarkedSettled(event: any, logger: any): IntentMarkedSettled
     logger.info(`[DECODE] IntentMarkedSettled nullifier=${decoded.nullifier_hash} commitment=${decoded.commitment}`);
     return decoded;
   } catch (error: any) {
-    logger.error(`[DECODE ERROR] IntentMarkedSettled: ${error?.message}`, {
-      keys: event.keys,
-      data: event.data,
-    });
+    logger.error(`[DECODE ERROR] IntentMarkedSettled: ${error?.message}`, { keys: event.keys, data: event.data });
     return null;
   }
 }
@@ -191,15 +213,11 @@ function decodeMerkleRootUpdated(event: any, logger: any): MerkleRootUpdatedEven
     if (!keys || keys.length < 2) {
       throw new Error(`Expected >=2 keys, got ${keys?.length ?? 0}`);
     }
-    // keys: [selector, new_root]
     const decoded = { new_root: keys[1] };
     logger.info(`[DECODE] MerkleRootUpdated new_root=${decoded.new_root}`);
     return decoded;
   } catch (error: any) {
-    logger.error(`[DECODE ERROR] MerkleRootUpdated: ${error?.message}`, {
-      keys: event.keys,
-      data: event.data,
-    });
+    logger.error(`[DECODE ERROR] MerkleRootUpdated: ${error?.message}`, { keys: event.keys, data: event.data });
     return null;
   }
 }
@@ -222,10 +240,7 @@ function decodeBatchProcessed(event: any, logger: any): BatchProcessedEvent | nu
     logger.info(`[DECODE] BatchProcessed batch_id=${decoded.batch_id} count=${decoded.commitments_count} reason=${decoded.reason}`);
     return decoded;
   } catch (error: any) {
-    logger.error(`[DECODE ERROR] BatchProcessed: ${error?.message}`, {
-      keys: event.keys,
-      data: event.data,
-    });
+    logger.error(`[DECODE ERROR] BatchProcessed: ${error?.message}`, { keys: event.keys, data: event.data });
     return null;
   }
 }
@@ -345,7 +360,7 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
             if (!forwarded) logger.warn(`[RELAY] CommitmentAdded forward failed tx=${txShort}`);
           }
 
-          // IntentSettled
+          // IntentSettled (direct STRK delivery — no swap)
           else if (isEventType(event, EVENT_KEYS.IntentSettled)) {
             logger.info(`[EVENT] IntentSettled tx=${txShort} block=${block.header.blockNumber}`);
 
@@ -363,7 +378,7 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
               continue;
             }
 
-            const amountLow = (decoded.amount & BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")).toString();
+            const amountLow  = (decoded.amount & BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")).toString();
             const amountHigh = (decoded.amount >> BigInt(128)).toString();
 
             await storageDb.insert(intents_settled).values({
@@ -383,10 +398,10 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
             const forwarded = await forwardToRelayer(
               "settled",
               {
-                intent_id: decoded.intent_id,
-                nullifier_hash: decoded.nullifier_hash,
-                token: decoded.token,
-                amount: decoded.amount.toString(),
+                intent_id:       decoded.intent_id,
+                nullifier_hash:  decoded.nullifier_hash,
+                token:           decoded.token,
+                amount:          decoded.amount.toString(),
                 event_timestamp: decoded.timestamp.toString(),
               },
               event.transactionHash,
@@ -394,6 +409,69 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
               Number(block.header.blockNumber),
             );
             if (!forwarded) logger.warn(`[RELAY] IntentSettled forward failed tx=${txShort}`);
+          }
+
+          // IntentSettledWithSwap (STRK delivered → dest_token via AVNU)
+          else if (isEventType(event, EVENT_KEYS.IntentSettledWithSwap)) {
+            logger.info(`[EVENT] IntentSettledWithSwap tx=${txShort} block=${block.header.blockNumber}`);
+
+            const decoded = decodeIntentSettledWithSwap(event, logger);
+            if (!decoded) continue;
+
+            const existing = await storageDb
+              .select()
+              .from(intents_settled)
+              .where(eq(intents_settled.transactionHash, event.transactionHash))
+              .limit(1);
+
+            if (existing.length > 0) {
+              logger.info(`[SKIP] IntentSettledWithSwap already indexed tx=${txShort}`);
+              continue;
+            }
+
+            // token/amount = dest (what recipient received). delivered* = STRK pre-swap.
+            const amountLow  = (decoded.dest_amount & BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")).toString();
+            const amountHigh = (decoded.dest_amount >> BigInt(128)).toString();
+            const deliveredAmountLow  = (decoded.delivered_amount & BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")).toString();
+            const deliveredAmountHigh = (decoded.delivered_amount >> BigInt(128)).toString();
+
+            await storageDb.insert(intents_settled).values({
+              eventId: event.transactionHash,
+              transactionHash: event.transactionHash,
+              intentId: decoded.intent_id,
+              nullifierHash: decoded.nullifier_hash,
+              token: decoded.dest_token,
+              amountLow,
+              amountHigh,
+              eventTimestamp: Number(decoded.timestamp),
+              timestamp: new Date(),
+              blockNumber: Number(block.header.blockNumber),
+              isSwap: true,
+              deliveredToken: decoded.delivered_token,
+              deliveredAmountLow,
+              deliveredAmountHigh,
+            });
+            logger.info(
+              `[DB] IntentSettledWithSwap inserted intent_id=${decoded.intent_id}` +
+              ` dest_token=${decoded.dest_token} dest_amount=${decoded.dest_amount}`
+            );
+
+            const forwarded = await forwardToRelayer(
+              "settled_with_swap",
+              {
+                intent_id:        decoded.intent_id,
+                nullifier_hash:   decoded.nullifier_hash,
+                delivered_token:  decoded.delivered_token,
+                delivered_amount: decoded.delivered_amount.toString(),
+                dest_token:       decoded.dest_token,
+                dest_amount:      decoded.dest_amount.toString(),
+                event_timestamp:  decoded.timestamp.toString(),
+              },
+              event.transactionHash,
+              logger,
+              Number(block.header.blockNumber),
+            );
+            if (!forwarded) logger.warn(`[RELAY] IntentSettledWithSwap forward failed tx=${txShort}`);
           }
 
           // IntentMarkedSettled
@@ -428,8 +506,8 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
             const forwarded = await forwardToRelayer(
               "marked_settled",
               {
-                nullifier_hash: decoded.nullifier_hash,
-                commitment: decoded.commitment,
+                nullifier_hash:  decoded.nullifier_hash,
+                commitment:      decoded.commitment,
                 event_timestamp: decoded.timestamp.toString(),
               },
               event.transactionHash,
@@ -506,7 +584,7 @@ export default function (runtimeConfig: ApibaraRuntimeConfig) {
             logger.info(`[DB] BatchProcessed inserted batch_id=${decoded.batch_id} count=${decoded.commitments_count}`);
           }
 
-          // Unhandled — log selector so we can identify it
+          // Unhandled
           else {
             logger.info(`[UNHANDLED] ${eventName} selector=${selector} tx=${txShort}`);
           }

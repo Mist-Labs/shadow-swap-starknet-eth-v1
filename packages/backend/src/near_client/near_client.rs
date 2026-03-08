@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::near_client::model::{
     DepositSubmitRequest, DepositSubmitResponse, DepositType, NearClient, NearSwapResult,
-    NearSwapStatus, QuoteRequest, QuoteResponse, RefundType, RecipientType, StatusResponse,
+    NearSwapStatus, QuoteRequest, QuoteResponse, RecipientType, RefundType, StatusResponse,
     SwapType, TokenInfo,
 };
 
@@ -21,8 +21,7 @@ impl NearClient {
             .build()
             .context("Failed to create HTTP client")?;
 
-        let base_url = std::env::var("NEAR_BASE_URL")
-            .unwrap_or_else(|_| BASE_URL.to_string());
+        let base_url = std::env::var("NEAR_BASE_URL").unwrap_or_else(|_| BASE_URL.to_string());
 
         Ok(Self {
             client,
@@ -256,10 +255,7 @@ impl NearClient {
                     return Ok(result);
                 }
                 NearSwapStatus::Failed => {
-                    return Err(anyhow!(
-                        "NEAR swap failed for deposit {}",
-                        deposit_address
-                    ));
+                    return Err(anyhow!("NEAR swap failed for deposit {}", deposit_address));
                 }
                 NearSwapStatus::IncompleteDeposit => {
                     warn!("⚠️ Incomplete deposit — waiting for resolution");

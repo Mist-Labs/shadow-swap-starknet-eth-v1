@@ -73,8 +73,7 @@ impl AppConfig {
                     .unwrap_or(60),
             },
             evm: EvmConfig {
-                rpc_url: env::var("EVM_RPC_URL")
-                    .map_err(|_| anyhow!("EVM_RPC_URL must be set"))?,
+                rpc_url: env::var("EVM_RPC_URL").map_err(|_| anyhow!("EVM_RPC_URL must be set"))?,
                 ws_url: env::var("EVM_WS_URL").ok(),
                 private_key: env::var("EVM_PRIVATE_KEY")
                     .map_err(|_| anyhow!("EVM_PRIVATE_KEY must be set"))?,
@@ -84,7 +83,11 @@ impl AppConfig {
                 settlement_address: env::var("EVM_SETTLEMENT_ADDRESS")
                     .map_err(|_| anyhow!("EVM_SETTLEMENT_ADDRESS must be set"))?,
                 chain_id: env::var("EVM_CHAIN_ID")
-                    .map_err(|_| anyhow!("EVM_CHAIN_ID must be set (e.g., 1 for mainnet, 11155111 for sepolia)"))?
+                    .map_err(|_| {
+                        anyhow!(
+                            "EVM_CHAIN_ID must be set (e.g., 1 for mainnet, 11155111 for sepolia)"
+                        )
+                    })?
                     .parse()
                     .map_err(|e| anyhow!("Invalid EVM_CHAIN_ID: {}", e))?,
             },
@@ -95,8 +98,7 @@ impl AppConfig {
                     .map_err(|_| anyhow!("STARKNET_PRIVATE_KEY must be set"))?,
                 account_address: env::var("STARKNET_ACCOUNT_ADDRESS").ok(),
                 contract_address: env::var("STARKNET_CONTRACT_ADDRESS").ok(),
-                chain_id: env::var("STARKNET_CHAIN_ID")
-                    .unwrap_or_else(|_| "SN_MAIN".to_string()),
+                chain_id: env::var("STARKNET_CHAIN_ID").unwrap_or_else(|_| "SN_MAIN".to_string()),
             },
             near: NearConfig {
                 api_key: env::var("NEAR_API_KEY").ok(),

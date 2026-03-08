@@ -3,7 +3,8 @@ CREATE TABLE merkle_leaves (
     leaf_id    SERIAL PRIMARY KEY,
     tree_name  VARCHAR(64) NOT NULL,
     leaf       VARCHAR(66) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    leaf_index -> Int4,
 );
 
 CREATE INDEX idx_merkle_leaves_tree ON merkle_leaves(tree_name);

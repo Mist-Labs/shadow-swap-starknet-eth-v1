@@ -72,7 +72,7 @@ echo -e "${BLUE}📡 Creating Ethereum Mainnet Webhooks${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-SUBGRAPH="shadowswap-ethereum-mainnet/1.0.0"
+SUBGRAPH="shadowswap-ethereum-mainnet/0.1.0"
 
 # ShadowSwap Events (matching Solidity event names)
 echo -e "${YELLOW}ShadowSwap Privacy Bridge Events:${NC}"

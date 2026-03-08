@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use starknet_crypto::Felt;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 use zeroize::Zeroizing;
 
 use crate::{
+    avnu::client::AvnuClient,
     database::db::Database,
     encryption::decrypt_ecies::{decrypt_with_ecies, decrypt_with_ecies_utf8},
     evm::relayer::EvmRelayer,
@@ -20,12 +22,17 @@ use crate::{
 
 const RESCUE_TIMEOUT_SECS: u64 = 3600;
 
+/// NEAR always delivers STRK on the StarkNet side of the bridge.
+/// Any other token in the delivery tx is unexpected and must be rejected.
+const STRK_ADDRESS: &str = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
+
 pub struct SettlementCoordinator {
     db: Arc<Database>,
     evm_relayer: Arc<EvmRelayer>,
     starknet_relayer: Arc<StarkNetRelayer>,
     near_client: Arc<NearClient>,
     merkle_manager: Arc<MerkleTreeManager>,
+    avnu_client: AvnuClient,
     keccak_proof_gen: Arc<MerkleProofGenerator>,
     poseidon_proof_gen: Arc<MerkleProofGenerator>,
     relayer_private_key: String,
@@ -50,6 +57,7 @@ impl SettlementCoordinator {
             starknet_relayer,
             near_client,
             merkle_manager,
+            avnu_client: AvnuClient::new(),
             keccak_proof_gen: Arc::new(MerkleProofGenerator::new(HashType::Keccak256)),
             poseidon_proof_gen: Arc::new(MerkleProofGenerator::new(HashType::Poseidon)),
             relayer_private_key,
@@ -111,22 +119,19 @@ impl SettlementCoordinator {
             return Ok(());
         }
 
-        // Step 2: Get destination tx and verify token delivery
+        // Step 2: Get destination tx, verify token delivery, and cache delivered values.
         let dest_tx_hash = near_result
             .destination_tx_hashes
             .first()
             .ok_or_else(|| anyhow!("No destination tx hash"))?;
 
-        let verified = self
+        let (delivered_token, delivered_amount) = self
             .verify_token_delivery(intent, dest_tx_hash)
             .await
-            .context("Token delivery verification failed")?;
+            .context("Token delivery verification failed")?
+            .ok_or_else(|| anyhow!("Token delivery not verified for tx {}", dest_tx_hash))?;
 
-        if !verified {
-            return Err(anyhow!("Token delivery not verified"));
-        }
-
-        // Step 3: Nullifier pre-check before settlement or rescue
+        // Step 3: Nullifier pre-check
         let nullifier_used = self.check_nullifier_used(intent).await?;
         if nullifier_used {
             warn!(
@@ -146,7 +151,9 @@ impl SettlementCoordinator {
                 &intent.id[..10],
                 stuck_secs
             );
-            return self.rescue(intent, dest_tx_hash).await;
+            return self
+                .rescue(intent, dest_tx_hash, &delivered_token, &delivered_amount)
+                .await;
         }
 
         // Step 5: Off-chain Merkle proof verification
@@ -189,6 +196,8 @@ impl SettlementCoordinator {
             decrypted_nullifier.as_str(),
             decrypted_recipient.as_str(),
             dest_tx_hash,
+            &delivered_token,
+            &delivered_amount,
         )
         .await
         .map_err(|e| {
@@ -212,11 +221,16 @@ impl SettlementCoordinator {
     }
 
     // ==============================================================
-    //  Rescue: bypass Merkle proof, send directly to recipient
-    //  Both chains read ACTUAL delivered token/amount from dest tx.
+    //  Rescue: bypass Merkle proof, direct transfer only (no swap).
     // ==============================================================
 
-    async fn rescue(&self, intent: &ShadowIntent, dest_tx_hash: &str) -> Result<()> {
+    async fn rescue(
+        &self,
+        intent: &ShadowIntent,
+        dest_tx_hash: &str,
+        delivered_token: &str,
+        delivered_amount: &str,
+    ) -> Result<()> {
         let recipient = Zeroizing::new(
             decrypt_with_ecies_utf8(&intent.encrypted_recipient, &self.relayer_private_key)
                 .context("Failed to decrypt recipient for rescue")?,
@@ -224,35 +238,23 @@ impl SettlementCoordinator {
 
         let rescue_tx_hash = match intent.dest_chain {
             ChainId::Evm => {
-                let (delivered_token, delivered_amount) = self
-                    .evm_relayer
-                    .get_delivered_token_and_amount(dest_tx_hash)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to read delivered token/amount from EVM tx {}",
-                            dest_tx_hash
-                        )
-                    })?;
-
                 info!(
                     "EVM rescue: token={} amount={} recipient={}...",
-                    &delivered_token,
-                    &delivered_amount,
+                    delivered_token,
+                    delivered_amount,
                     &recipient[..10.min(recipient.len())]
                 );
 
                 let tx = self
                     .evm_relayer
-                    .rescue_tokens(&delivered_token, recipient.as_str(), &delivered_amount)
+                    .rescue_tokens(delivered_token, recipient.as_str(), delivered_amount)
                     .await
                     .map_err(|e| {
                         error!(
-                            "EVM rescue failed for {}: token={} recipient={}... amount={} — {:#}",
+                            "EVM rescue failed for {}: token={} amount={} — {:#}",
                             &intent.id[..10],
-                            &delivered_token,
-                            &recipient[..10.min(recipient.len())],
-                            &delivered_amount,
+                            delivered_token,
+                            delivered_amount,
                             e
                         );
                         e
@@ -263,31 +265,16 @@ impl SettlementCoordinator {
             }
 
             ChainId::Starknet => {
-                use starknet::core::types::Felt;
-
-                // FIX: Read actual delivered token/amount from StarkNet dest tx,
-                // not the source-chain intent values (token may have changed via NEAR swap).
-                let (delivered_token, delivered_amount) = self
-                    .starknet_relayer
-                    .get_delivered_token_and_amount(dest_tx_hash)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to read delivered token/amount from StarkNet tx {}",
-                            dest_tx_hash
-                        )
-                    })?;
-
                 let recipient_felt = Felt::from_hex(recipient.as_str())
                     .map_err(|e| anyhow!("Invalid recipient hex: {}", e))?;
-                let token_felt = Felt::from_hex(&delivered_token)
+                let token_felt = Felt::from_hex(delivered_token)
                     .map_err(|e| anyhow!("Invalid delivered token hex: {}", e))?;
-                let amount = u256_to_felt_pair(&delivered_amount)?;
+                let amount = u256_to_felt_pair(delivered_amount)?;
 
                 info!(
                     "StarkNet rescue: token={} amount={} recipient={}...",
-                    &delivered_token,
-                    &delivered_amount,
+                    delivered_token,
+                    delivered_amount,
                     &recipient[..10.min(recipient.len())]
                 );
 
@@ -297,11 +284,10 @@ impl SettlementCoordinator {
                     .await
                     .map_err(|e| {
                         error!(
-                            "StarkNet rescue failed for {}: token={} recipient={}... amount={} — {:#}",
+                            "StarkNet rescue failed for {}: token={} amount={} — {:#}",
                             &intent.id[..10],
-                            &delivered_token,
-                            &recipient[..10.min(recipient.len())],
-                            &delivered_amount,
+                            delivered_token,
+                            delivered_amount,
                             e
                         );
                         e
@@ -320,19 +306,55 @@ impl SettlementCoordinator {
         self.mark_settled_with_retry(intent).await;
 
         info!(
-            "Intent {} rescued on {} chain",
+            "Intent {} rescued on {} (tx={})",
             &intent.id[..10],
-            if intent.dest_chain == ChainId::Evm {
-                "EVM"
-            } else {
-                "StarkNet"
-            }
+            if intent.dest_chain == ChainId::Evm { "EVM" } else { "StarkNet" },
+            &dest_tx_hash[..18.min(dest_tx_hash.len())]
         );
         Ok(())
     }
 
     // ==============================================================
-    //  Nullifier check — both chains
+    //  Direct StarkNet settlement — no AVNU swap.
+    // ==============================================================
+
+    async fn settle_direct(
+        &self,
+        intent: &ShadowIntent,
+        decrypted_nullifier: &str,
+        decrypted_recipient: &str,
+        delivered_token: &str,
+        delivered_amount: &str,
+    ) -> Result<()> {
+        let intent_id =
+            Felt::from_hex(&intent.id).map_err(|e| anyhow!("Invalid intent id hex: {}", e))?;
+        let nullifier = Felt::from_hex(decrypted_nullifier)
+            .map_err(|e| anyhow!("Invalid decrypted nullifier hex: {}", e))?;
+        let recipient = Felt::from_hex(decrypted_recipient)
+            .map_err(|e| anyhow!("Invalid recipient hex: {}", e))?;
+        let token = Felt::from_hex(delivered_token)
+            .map_err(|e| anyhow!("Invalid delivered token hex: {}", e))?;
+        let amount = u256_to_felt_pair(delivered_amount)?;
+
+        self.starknet_relayer
+            .settle_and_release(
+                intent_id,
+                nullifier,
+                recipient,
+                token,
+                amount,
+                Felt::ZERO,
+                (Felt::ZERO, Felt::ZERO),
+                (Felt::ZERO, Felt::ZERO),
+                &[],
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    // ==============================================================
+    //  Nullifier check
     // ==============================================================
 
     async fn check_nullifier_used(&self, intent: &ShadowIntent) -> Result<bool> {
@@ -343,8 +365,13 @@ impl SettlementCoordinator {
                 .await
                 .context("Nullifier check failed on EVM"),
             ChainId::Starknet => {
-                use starknet::core::types::Felt;
-                let nullifier_felt = Felt::from_hex(&intent.nullifier_hash)
+                let encrypted_nullifier = intent
+                    .encrypted_nullifier
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Missing encrypted_nullifier"))?;
+                let decrypted = decrypt_with_ecies(encrypted_nullifier, &self.relayer_private_key)
+                    .context("Failed to decrypt nullifier for nullifier check")?;
+                let nullifier_felt = Felt::from_hex(&decrypted)
                     .map_err(|e| anyhow!("Invalid nullifier hex: {}", e))?;
                 self.starknet_relayer
                     .is_nullifier_used(nullifier_felt)
@@ -391,11 +418,8 @@ impl SettlementCoordinator {
             proof.len(),
             leaf_index
         );
-        info!("Expected root: {}", &root[..root.len().min(18)]);
-        info!(
-            "Computed root: {}",
-            &computed_root[..computed_root.len().min(18)]
-        );
+        info!("Expected root:  {}", &root[..root.len().min(18)]);
+        info!("Computed root:  {}", &computed_root[..computed_root.len().min(18)]);
 
         if computed_root.to_lowercase() != root.to_lowercase() {
             error!(
@@ -424,10 +448,14 @@ impl SettlementCoordinator {
     }
 
     // ==============================================================
-    //  Token delivery verification — both chains
+    //  Token delivery verification
     // ==============================================================
 
-    async fn verify_token_delivery(&self, intent: &ShadowIntent, tx_hash: &str) -> Result<bool> {
+    async fn verify_token_delivery(
+        &self,
+        intent: &ShadowIntent,
+        tx_hash: &str,
+    ) -> Result<Option<(String, String)>> {
         info!(
             "Verifying token delivery: {}",
             &tx_hash[..18.min(tx_hash.len())]
@@ -435,34 +463,28 @@ impl SettlementCoordinator {
 
         match intent.dest_chain {
             ChainId::Evm => {
-                // get_delivered_token_and_amount reads the Transfer event to the
-                // settlement contract — if it succeeds, delivery is verified.
                 match self
                     .evm_relayer
                     .get_delivered_token_and_amount(tx_hash)
                     .await
                 {
-                    Ok(_) => Ok(true),
+                    Ok((token, amount)) => Ok(Some((token, amount))),
                     Err(e) => {
                         warn!(
                             "EVM delivery verification failed for {}: {}",
                             &tx_hash[..18.min(tx_hash.len())],
                             e
                         );
-                        Ok(false)
+                        Ok(None)
                     }
                 }
             }
-            ChainId::Starknet => {
-                // Verify Transfer event directed to StarkNet settlement contract
-                self.verify_starknet_transfer(tx_hash).await
-            }
+            ChainId::Starknet => self.verify_starknet_transfer(tx_hash).await,
         }
     }
 
-    /// Verify the NEAR delivery TX contains a Transfer event to the StarkNet settlement contract.
-    async fn verify_starknet_transfer(&self, tx_hash: &str) -> Result<bool> {
-        use starknet::core::types::{Felt, TransactionReceipt};
+    async fn verify_starknet_transfer(&self, tx_hash: &str) -> Result<Option<(String, String)>> {
+        use starknet::core::types::TransactionReceipt;
         use starknet::core::utils::get_selector_from_name;
 
         let tx_hash_felt =
@@ -476,7 +498,7 @@ impl SettlementCoordinator {
             Ok(r) => r,
             Err(e) => {
                 warn!("StarkNet transfer verification failed: {}", e);
-                return Ok(false);
+                return Ok(None);
             }
         };
 
@@ -487,7 +509,7 @@ impl SettlementCoordinator {
                     "StarkNet delivery TX is not an Invoke transaction: {}",
                     &tx_hash[..18.min(tx_hash.len())]
                 );
-                return Ok(false);
+                return Ok(None);
             }
         };
 
@@ -501,31 +523,41 @@ impl SettlementCoordinator {
         let transfer_selector =
             get_selector_from_name("Transfer").map_err(|e| anyhow!("Selector error: {}", e))?;
 
-        // Transfer event keys: [selector, from_address, to_address]
-        let transfer_to_contract = events.iter().any(|event| {
-            event.keys.len() >= 3
+        let transfer_event = events.iter().find(|event| {
+            event.keys.len() >= 1
                 && event.keys[0] == transfer_selector
-                && event.keys[2] == settlement_addr
+                && event.data.len() >= 4
+                && event.data[1] == settlement_addr
         });
 
-        if transfer_to_contract {
-            info!(
-                "StarkNet Transfer to settlement contract verified: {}",
-                &tx_hash[..18.min(tx_hash.len())]
-            );
-            Ok(true)
-        } else {
-            warn!(
-                "No Transfer to settlement contract found in StarkNet TX: {}",
-                &tx_hash[..18.min(tx_hash.len())]
-            );
-            Ok(false)
+        match transfer_event {
+            None => {
+                warn!(
+                    "No Transfer to settlement contract found in StarkNet TX: {}",
+                    &tx_hash[..18.min(tx_hash.len())]
+                );
+                Ok(None)
+            }
+            Some(event) => {
+                let token_hex = format!("0x{:064x}", event.from_address);
+                let low = event.data[2].to_biguint();
+                let high = event.data[3].to_biguint();
+                let amount = (high << 128u32) + low;
+
+                info!(
+                    "StarkNet Transfer verified: token={} amount={} tx={}",
+                    &token_hex,
+                    &amount,
+                    &tx_hash[..18.min(tx_hash.len())]
+                );
+
+                Ok(Some((token_hex, amount.to_string())))
+            }
         }
     }
 
     // ==============================================================
     //  Settlement on destination chain
-    //  Both chains read ACTUAL delivered token/amount from dest tx.
     // ==============================================================
 
     async fn settle_on_destination(
@@ -534,25 +566,17 @@ impl SettlementCoordinator {
         decrypted_nullifier: &str,
         decrypted_recipient: &str,
         dest_tx_hash: &str,
+        delivered_token: &str,
+        delivered_amount: &str,
     ) -> Result<()> {
         info!("Settling on destination chain");
 
         match intent.dest_chain {
+            // ── EVM ───────────────────────────────────────────────────────────
             ChainId::Evm => {
-                let (delivered_token, delivered_amount) = self
-                    .evm_relayer
-                    .get_delivered_token_and_amount(dest_tx_hash)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to read delivered token/amount from EVM tx {}",
-                            dest_tx_hash
-                        )
-                    })?;
-
                 info!(
-                    "settle_and_release EVM: token={} amount={} (source intent: token={} amount={})",
-                    &delivered_token, &delivered_amount, &intent.token, &intent.amount
+                    "settle_and_release EVM: token={} amount={}",
+                    delivered_token, delivered_amount
                 );
 
                 self.evm_relayer
@@ -560,33 +584,107 @@ impl SettlementCoordinator {
                         &intent.id,
                         decrypted_nullifier,
                         decrypted_recipient,
-                        &delivered_token,
-                        &delivered_amount,
+                        delivered_token,
+                        delivered_amount,
                     )
                     .await?;
             }
 
+            // ── StarkNet ──────────────────────────────────────────────────────
             ChainId::Starknet => {
-                use starknet::core::types::Felt;
+                // NEAR always delivers STRK on the StarkNet path.
+                if delivered_token.to_lowercase() != STRK_ADDRESS {
+                    return Err(anyhow!(
+                        "NEAR delivered unexpected token on StarkNet path: {} (expected STRK {})",
+                        delivered_token,
+                        STRK_ADDRESS
+                    ));
+                }
 
-                // FIX: Read actual delivered token/amount from StarkNet dest tx.
-                // EVM → StarkNet swaps change the token (e.g. ETH → STRK); using
-                // intent.token/amount would call the contract with wrong values.
-                let (delivered_token, delivered_amount) = self
-                    .starknet_relayer
-                    .get_delivered_token_and_amount(dest_tx_hash)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to read delivered token/amount from StarkNet tx {}",
-                            dest_tx_hash
-                        )
-                    })?;
+                let dest_token_str: Option<&str> = match intent.dest_token.as_deref() {
+                    None | Some("") => None,
+                    Some(addr) => {
+                        Felt::from_hex(addr).with_context(|| {
+                            format!(
+                                "intent.dest_token is not a valid StarkNet address: {}",
+                                addr
+                            )
+                        })?;
+                        Some(addr)
+                    }
+                };
 
-                info!(
-                    "settle_and_release StarkNet: token={} amount={} (source intent: token={} amount={})",
-                    &delivered_token, &delivered_amount, &intent.token, &intent.amount
-                );
+                let needs_swap = dest_token_str
+                    .map(|dt| dt.to_lowercase() != delivered_token.to_lowercase())
+                    .unwrap_or(false);
+
+                // (dest_token_felt, expected_dest_amount, min_dest_amount, routes_calldata)
+                let (dest_token_felt, expected_dest_amount, min_dest_amount, routes_calldata): (
+                    Felt,
+                    (Felt, Felt),
+                    (Felt, Felt),
+                    Vec<Felt>,
+                ) = if needs_swap {
+                    let dest_token = dest_token_str.unwrap();
+                    // taker = settlement contract (on-chain caller of multi_route_swap)
+                    let taker = self.starknet_relayer.contract_address_hex();
+
+                    let quote = match self
+                        .avnu_client
+                        .fetch_quote(delivered_token, dest_token, delivered_amount, &taker)
+                        .await
+                    {
+                        Ok(q) => q,
+                        Err(e) if e.to_string().starts_with("AVNU_DUST:") => {
+                            warn!(
+                                "Intent {}: dust amount, skipping swap — delivering {} as-is",
+                                &intent.id[..10],
+                                delivered_token
+                            );
+                            return self
+                                .settle_direct(
+                                    intent,
+                                    decrypted_nullifier,
+                                    decrypted_recipient,
+                                    delivered_token,
+                                    delivered_amount,
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            return Err(e).with_context(|| {
+                                format!(
+                                    "AVNU quote failed for intent {}: {} -> {}",
+                                    &intent.id[..10],
+                                    delivered_token,
+                                    dest_token
+                                )
+                            });
+                        }
+                    };
+
+                    let min_felt = quote.min_dest_amount_felts()?;
+                    let expected_felt = quote.buy_amount_felts()?;
+                    let dest_felt = Felt::from_hex(dest_token)
+                        .map_err(|e| anyhow!("Invalid dest_token hex: {}", e))?;
+
+                    info!(
+                        "AVNU quote intent={}: buy={} min={} route_felts={}",
+                        &intent.id[..10],
+                        quote.buy_amount,
+                        quote.min_dest_amount,
+                        quote.routes_calldata.len()
+                    );
+
+                    (dest_felt, expected_felt, min_felt, quote.routes_calldata)
+                } else {
+                    (
+                        Felt::ZERO,
+                        (Felt::ZERO, Felt::ZERO),
+                        (Felt::ZERO, Felt::ZERO),
+                        vec![],
+                    )
+                };
 
                 let intent_id = Felt::from_hex(&intent.id)
                     .map_err(|e| anyhow!("Invalid intent id hex: {}", e))?;
@@ -594,13 +692,33 @@ impl SettlementCoordinator {
                     .map_err(|e| anyhow!("Invalid decrypted nullifier hex: {}", e))?;
                 let recipient = Felt::from_hex(decrypted_recipient)
                     .map_err(|e| anyhow!("Invalid recipient hex: {}", e))?;
-                let token = Felt::from_hex(&delivered_token)
+                let token = Felt::from_hex(delivered_token)
                     .map_err(|e| anyhow!("Invalid delivered token hex: {}", e))?;
-                let amount = u256_to_felt_pair(&delivered_amount)?;
+                let amount = u256_to_felt_pair(delivered_amount)?;
+
+                info!(
+                    "settle_and_release StarkNet intent={}: token={} amount={} swap={}",
+                    &intent.id[..10],
+                    delivered_token,
+                    delivered_amount,
+                    needs_swap
+                );
 
                 self.starknet_relayer
-                    .settle_and_release(intent_id, nullifier, recipient, token, amount)
+                    .settle_and_release(
+                        intent_id,
+                        nullifier,
+                        recipient,
+                        token,
+                        amount,
+                        dest_token_felt,
+                        expected_dest_amount,
+                        min_dest_amount,
+                        &routes_calldata,
+                    )
                     .await?;
+
+                let _ = dest_tx_hash;
             }
         }
 
@@ -661,8 +779,6 @@ impl SettlementCoordinator {
                     .await?;
             }
             ChainId::Starknet => {
-                use starknet::core::types::Felt;
-
                 let commitment_felt = Felt::from_hex(&intent.commitment)
                     .map_err(|e| anyhow!("Invalid commitment hex: {}", e))?;
                 let nullifier_felt = Felt::from_hex(&intent.nullifier_hash)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ShadowSwap: 8 STRK (Starknet) → USDT (BSC)
+ShadowSwap: 52 STRK (Starknet) → USDT (Ethereum)
 originAsset:      nep141:starknet.omft.near
-destinationAsset: nep245:v2_1.omni.hot.tg:56_2CMMyVTGZkeyNZTSvS5sarzfir6g
-BSC USDT decimals: 18
+destinationAsset: nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near
+Ethereum USDT decimals: 6
 """
 
 import os, sys, secrets, json, hmac as hmaclib, hashlib, time, requests
@@ -21,20 +21,20 @@ with open('.env') as f:
 
 NEAR_API_KEY       = os.environ['NEAR_API_KEY']
 RELAYER_PUBLIC_KEY = os.environ['RELAYER_PUBLIC_KEY']
-EVM_SETTLEMENT     = os.environ['EVM_SETTLEMENT_ADDRESS']  # BSC settlement contract
+EVM_SETTLEMENT     = os.environ['EVM_SETTLEMENT_ADDRESS']  # Ethereum settlement contract
 SN_ACCOUNT         = os.environ['STARKNET_ACCOUNT_ADDRESS']
 HMAC_SECRET        = os.environ['HMAC_SECRET']
 BACKEND            = "http://127.0.0.1:8080"
 
 # ── Swap parameters ───────────────────────────────────────────────────────────
-AMOUNT_STRK    = "8000000000000000000"   # 8 STRK (18 decimals)
-STRK_TOKEN     = "0x04718f5a0Fc34cC1AF16A1cdee98fFB20C31f5cD61D6Ab07201858f4287c938D"
-RECIPIENT_BSC  = "0x2af423ba8cd60fe7ca0bbcc4cf1f4e6a7e576039"  # your BSC wallet
+AMOUNT_STRK       = "52000000000000000000"   # 52 STRK (18 decimals)
+STRK_TOKEN        = "0x04718f5a0Fc34cC1AF16A1cdee98fFB20C31f5cD61D6Ab07201858f4287c938D"
+RECIPIENT_ETH     = "0xF23a4a721d59CA979cB354bae567A59eD7EC04c5"
 
-BSC_USDT_ASSET = "nep245:v2_1.omni.hot.tg:56_2CMMyVTGZkeyNZTSvS5sarzfir6g"
+ETH_USDT_ASSET    = "nep141:eth-0xdac17f958d2ee523a2206206994597c13d831ec7.omft.near"
 
 print("=" * 70)
-print("SHADOWSWAP — StarkNet STRK → BSC USDT")
+print("SHADOWSWAP — StarkNet STRK → Ethereum USDT")
 print("=" * 70)
 
 # ── 1. Privacy params ─────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ pub_key_bytes = bytes.fromhex(pub_key_hex)
 
 enc_secret    = "0x" + encrypt(pub_key_bytes, bytes.fromhex(secret)).hex()
 enc_nullifier = "0x" + encrypt(pub_key_bytes, bytes.fromhex(nullifier)).hex()
-enc_recipient = "0x" + encrypt(pub_key_bytes, RECIPIENT_BSC.lower().encode()).hex()
+enc_recipient = "0x" + encrypt(pub_key_bytes, RECIPIENT_ETH.lower().encode()).hex()
 
 print(f"\ncommitment:     {commitment}")
 print(f"nullifier_hash: {nullifier_hash}")
@@ -72,10 +72,10 @@ quote_body = {
     "dry": False,
     "swapType": "EXACT_INPUT",
     "slippageTolerance": 100,  # 1%
-    "originAsset": "nep141:starknet.omft.near",   # STRK on Starknet
-    "destinationAsset": BSC_USDT_ASSET,            # USDT on BSC
+    "originAsset": "nep141:starknet.omft.near",
+    "destinationAsset": ETH_USDT_ASSET,
     "amount": AMOUNT_STRK,
-    "recipient": EVM_SETTLEMENT,   # NEAR delivers to BSC settlement contract
+    "recipient": EVM_SETTLEMENT,
     "refundTo": SN_ACCOUNT,
     "depositType": "ORIGIN_CHAIN",
     "refundType": "ORIGIN_CHAIN",
@@ -146,7 +146,7 @@ print(f"\nBackend ({resp.status_code}): {resp.text[:300]}")
 if resp.ok:
     print(f"\n{'=' * 70}")
     print(f"🎯 Intent ID:        {intent_id}")
-    print(f"📬 Send 8 STRK to:   {deposit_address}")
+    print(f"📬 Send 52 STRK to:  {deposit_address}")
     print(f"{'=' * 70}")
     print(f"\nPlaintext (keep secure):")
     print(f"  secret:    {secret}")
