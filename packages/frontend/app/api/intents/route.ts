@@ -21,12 +21,14 @@ const ALL_STATUSES = [
 async function fetchByStatus(
     status: string,
     limit: number,
-    userAddress?: string
+    userAddress?: string,
+    viewKey?: string
 ): Promise<Record<string, unknown>[]> {
     if (!RELAYER_URL) return []
 
     const params = new URLSearchParams({ status, limit: String(limit) })
     if (userAddress) params.set("user_address", userAddress)
+    if (viewKey) params.set("view_key", viewKey)
 
     try {
         const res = await fetch(`${RELAYER_URL}/bridge/intents?${params}`, {
@@ -80,18 +82,47 @@ export async function GET(req: NextRequest) {
             200
         )
         const userAddress = searchParams.get("user_address") || undefined
+        const viewKeyParam = searchParams.get("view_key") || undefined
+        const viewKeys = viewKeyParam ? viewKeyParam.split(",") : []
 
-        let data: Record<string, unknown>[]
+        let data: Record<string, unknown>[] = []
 
         if (requestedStatus) {
             // Single status requested
-            data = await fetchByStatus(requestedStatus, limit, userAddress)
+            if (viewKeys.length > 0) {
+                const results = await Promise.all(
+                    viewKeys.map(vk => fetchByStatus(requestedStatus, limit, userAddress, vk))
+                )
+                data = results.flat()
+            } else {
+                data = await fetchByStatus(requestedStatus, limit, userAddress, undefined)
+            }
         } else {
             // No status filter — fan-out across all statuses and merge
-            const results = await Promise.all(
-                ALL_STATUSES.map((s) => fetchByStatus(s, limit, userAddress))
-            )
-            data = results.flat()
+            if (viewKeys.length > 0) {
+                const promises = []
+                for (const status of ALL_STATUSES) {
+                    for (const vk of viewKeys) {
+                        promises.push(fetchByStatus(status, limit, userAddress, vk))
+                    }
+                }
+                const results = await Promise.all(promises)
+                data = results.flat()
+            } else {
+                const results = await Promise.all(
+                    ALL_STATUSES.map((s) => fetchByStatus(s, limit, userAddress, undefined))
+                )
+                data = results.flat()
+            }
+            
+            // Deduplicate across statuses and view keys to ensure unique history
+            const uniqueIntents = new Map()
+            for (const intent of data) {
+                if (intent.intent_id) {
+                    uniqueIntents.set(intent.intent_id, intent)
+                }
+            }
+            data = Array.from(uniqueIntents.values())
 
             // Sort merged results by created_at descending (newest first)
             data.sort((a, b) => {

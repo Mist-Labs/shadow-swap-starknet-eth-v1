@@ -1,4 +1,4 @@
-import { CallData, type Call } from "starknet"
+import { type Call, cairo } from "starknet"
 
 /**
  * AVNU DEX router on StarkNet Mainnet.
@@ -92,10 +92,11 @@ export function buildMulticall(
         {
             contractAddress: sellTokenAddress,
             entrypoint: "approve",
-            calldata: CallData.compile({
-                spender: AVNU_ROUTER,
-                amount: { low: sellAmount, high: 0 },
-            }),
+            calldata: [
+                AVNU_ROUTER,
+                cairo.uint256(sellAmount).low,
+                cairo.uint256(sellAmount).high
+            ],
         },
 
         // 2. Execute AVNU swap (sellToken → STRK, STRK lands in user wallet)
@@ -109,10 +110,11 @@ export function buildMulticall(
         {
             contractAddress: strkAddress,
             entrypoint: "transfer",
-            calldata: CallData.compile({
-                recipient: depositAddress,
-                amount: { low: strkAmount, high: 0 },
-            }),
+            calldata: [
+                depositAddress,
+                cairo.uint256(strkAmount).low,
+                cairo.uint256(strkAmount).high
+            ],
         },
     ]
 }

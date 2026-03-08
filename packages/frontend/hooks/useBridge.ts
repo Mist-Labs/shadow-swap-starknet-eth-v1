@@ -3,6 +3,7 @@ import { parseUnits } from "viem"
 import { sendTransaction, writeContract } from "wagmi/actions"
 import { config as wagmiConfig } from "@/lib/web3/config"
 import type { AccountInterface, Call } from "starknet"
+import { cairo } from "starknet"
 import {
     generateEvmPrivacyParams,
     generateStarknetPrivacyParams,
@@ -15,7 +16,7 @@ import { getAvnuQuote, buildMulticall } from "@/lib/avnu"
 import { initiateBridge } from "@/lib/api"
 import { getTokenInfo, STRK_TOKEN, type ChainType } from "@/lib/tokens"
 import { ETHEREUM_CONTRACTS, STARKNET_CONTRACTS } from "@/lib/contracts"
-
+import { parseBridgeError } from "@/lib/errors"
 // ─── Step labels ──────
 
 export type BridgeStep =
@@ -44,6 +45,11 @@ interface BridgeParams {
      * Required when sourceChain === "starknet" and token requiresMulticall.
      */
     starknetAccount?: AccountInterface
+    /**
+     * Connected EVM address from Wagmi useAccount().address.
+     * Used to generate the ethereum view_key.
+     */
+    evmAddress?: string
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -162,6 +168,8 @@ export function useBridge() {
             const encrypted_secret = eciesEncryptBytes(privacyData._secret)
             const encrypted_nullifier = eciesEncryptBytes(privacyData._nullifier)
             const encrypted_recipient = eciesEncryptString(params.recipient.toLowerCase())
+
+            // Derive view key for the source chain wallet (backend constraint: VARCHAR(66))
             const viewKey = deriveViewKey(params.walletAddress, params.sourceChain)
 
             // ─── Step 6: Submit intent to relayer backend ────────────────────────────────
@@ -240,12 +248,20 @@ export function useBridge() {
                     if (!params.starknetAccount) {
                         throw new Error("StarkNet wallet not connected.")
                     }
+                    console.log("Bridging STRK via Starknet wallet transfer...");
+                    
+                    // Convert raw string to u256 for Cairo 1
+                    const u256Amount = cairo.uint256(bridgeAmount);
+                    
                     const tx = await params.starknetAccount.execute([{
                         contractAddress: STRK_TOKEN.address,
                         entrypoint: "transfer",
-                        calldata: [nearQuote.deposit_address, bridgeAmount, "0"], // recipient, low, high
+                        calldata: [nearQuote.deposit_address, u256Amount.low, u256Amount.high],
                     }])
+                    
+                    console.log("Transfer tx submitted, waiting for confirmation...", tx.transaction_hash);
                     await params.starknetAccount.waitForTransaction(tx.transaction_hash)
+                    
                     setTxHash(tx.transaction_hash)
                     submitDepositToNear(tx.transaction_hash, nearQuote.deposit_address).catch(console.warn)
                 }
@@ -253,11 +269,13 @@ export function useBridge() {
 
             setStep("waiting-solver")
             console.log("✅ Intent created:", response)
+            console.log("✅ Intent created:", response)
         } catch (err: unknown) {
-            console.error("Bridge Error:", err)
-            setError(err instanceof Error ? err.message : "Bridge process failed")
+            const parsedError = parseBridgeError(err)
+            console.error("Bridge Error:", err, parsedError.technicalMessage)
+            setError(parsedError.userMessage)
             setStep("failed")
-            throw err
+            throw parsedError
         }
     }, [])
 

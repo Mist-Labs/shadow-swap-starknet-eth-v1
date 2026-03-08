@@ -30,30 +30,47 @@ import {
   RefreshCw,
   AlertCircle,
   Wifi,
-  Key,
 } from "lucide-react"
 import { useBridgeIntents, formatTimeAgo, formatChainName, formatAmount } from "@/hooks/useBridgeIntents"
 import { useAccount } from "wagmi"
 import { useAccount as useStarknetAccount } from "@starknet-react/core"
 import { deriveViewKey } from "@/lib/crypto"
-import { toast } from "sonner"
 import type { IntentStatusResponse, IntentStatus } from "@/lib/api"
 import type { ChainType } from "@/lib/tokens"
-
 export default function ActivityPage() {
   const { address: evmAddress, isConnected: isEvmConnected } = useAccount()
   const { address: starknetAddress, isConnected: isStarknetConnected } = useStarknetAccount()
 
-  const [viewKey, setViewKey] = useState<string | null>(null)
-  const [viewKeyCopied, setViewKeyCopied] = useState(false)
-  const isViewKeyGenerated = !!viewKey
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [networkFilter, setNetworkFilter] = useState<string>("all")
   const [selectedTx, setSelectedTx] = useState<IntentStatusResponse | null>(null)
   const [copiedField, setCopiedField] = useState<string | null>(null)
 
-  // Fetch bridge intents — when viewKey is present, filter by it
+  // Automatically derive view_key(s) if wallets are connected
+  const derivedViewKey = useMemo(() => {
+    const keys: string[] = []
+
+    if (isEvmConnected && evmAddress) {
+      try {
+        keys.push(deriveViewKey(evmAddress, "ethereum"))
+      } catch (e) {
+        console.warn("Failed to derive EVM view key", e)
+      }
+    }
+
+    if (isStarknetConnected && starknetAddress) {
+      try {
+        keys.push(deriveViewKey(starknetAddress as string, "starknet"))
+      } catch (e) {
+        console.warn("Failed to derive Starknet view key", e)
+      }
+    }
+
+    return keys.length > 0 ? keys.join(",") : undefined
+  }, [evmAddress, starknetAddress, isEvmConnected, isStarknetConnected])
+
+  // Fetch bridge intents — when derivedViewKey is present, it securely filters the backend
   const filterStatus = statusFilter !== "all" ? (statusFilter as IntentStatus) : undefined
   const filterChain = networkFilter !== "all" ? (networkFilter as ChainType) : undefined
 
@@ -61,40 +78,8 @@ export default function ActivityPage() {
     status: filterStatus,
     chain: filterChain,
     limit: 50,
-    viewKey: viewKey ?? undefined,
+    viewKey: derivedViewKey,
   })
-
-  // Copy the view key to clipboard
-  const copyViewKey = () => {
-    if (!viewKey) return
-    navigator.clipboard.writeText(viewKey)
-    setViewKeyCopied(true)
-    setTimeout(() => setViewKeyCopied(false), 2000)
-  }
-
-  // Generate deterministic view key from connected wallet
-  // Supports both EVM (Reown/wagmi) and Starknet (StarknetKit)
-  const handleGenerateViewKey = async () => {
-    // Try EVM wallet first, then Starknet
-    const address = evmAddress || (starknetAddress as string | undefined)
-    const chainSource: ChainType = evmAddress ? "ethereum" : "starknet"
-    const isConnected = isEvmConnected || isStarknetConnected
-
-    if (!isConnected || !address) {
-      toast.error("Please connect your EVM or Starknet wallet first")
-      return
-    }
-
-    try {
-      const generatedKey = deriveViewKey(address, chainSource)
-      setViewKey(generatedKey)
-      toast.success("View Key generated — your transaction history is now visible")
-      // React Query will re-run the query because viewKey changed in the query key
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to generate View Key"
-      toast.error(msg)
-    }
-  }
 
   // Client-side filtering for search queries
   const filteredTransactions = useMemo(() => {
@@ -337,56 +322,7 @@ export default function ActivityPage() {
               </Button>
             </div>
 
-            {/* View Key Banner */}
-            {!isViewKeyGenerated ? (
-              <div className="mb-6 rounded-lg border border-orange-500/20 bg-orange-500/10 p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-lg font-medium text-orange-500 flex items-center gap-2">
-                    <Key className="h-4 w-4" />
-                    Private History Locked
-                  </h3>
-                  <p className="text-sm text-neutral-400 mt-1">
-                    Generate a deterministic View Key from your wallet to decrypt and view your
-                    bridge transaction history. Connect either your EVM or Starknet wallet.
-                  </p>
-                  {!isEvmConnected && !isStarknetConnected && (
-                    <p className="text-xs text-orange-400 mt-2">⚠ No wallet connected — connect a wallet first</p>
-                  )}
-                </div>
-                <Button
-                  onClick={handleGenerateViewKey}
-                  disabled={!isEvmConnected && !isStarknetConnected}
-                  className="bg-orange-500 text-white hover:bg-orange-600 border-none shrink-0"
-                >
-                  <Key className="mr-2 h-4 w-4" />
-                  Generate View Key
-                </Button>
-              </div>
-            ) : (
-              <div className="mb-6 rounded-lg border border-green-500/20 bg-green-500/10 p-4 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 text-green-500 min-w-0">
-                  <CheckCircle2 className="h-5 w-5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="font-medium">View Key Active</p>
-                    <p className="text-sm text-green-400/80 font-mono mt-0.5 truncate">
-                      {viewKey ? `${viewKey.slice(0, 14)}...${viewKey.slice(-8)}` : ""}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={copyViewKey}
-                  title="Copy view key"
-                  className="shrink-0 text-green-400 hover:text-green-300 transition-colors"
-                >
-                  {viewKeyCopied ? (
-                    <Check className="h-4 w-4" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-            )}
-
+            {/* View Key Banner Removed per User Request */}
           </div>
 
           {/* Error State */}
