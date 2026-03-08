@@ -9,7 +9,7 @@ echo "🚀 Deploying ShadowSwap Indexer to Goldsky..."
 # Deploy Ethereum Mainnet
 echo ""
 echo "📦 Deploying Ethereum indexer..."
-goldsky subgraph deploy shadowswap-ethereum/1.0.0 \
+goldsky subgraph deploy shadowswap-ethereum-mainnet/0.1.0 \
   --from-abi ./goldsky-config-ethereum.json
 
 echo ""

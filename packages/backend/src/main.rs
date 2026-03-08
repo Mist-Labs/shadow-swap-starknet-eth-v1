@@ -1,4 +1,5 @@
 mod api;
+pub mod avnu;
 mod config;
 mod database;
 mod encryption;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpServer};
 use anyhow::{Context, Result};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
@@ -110,13 +112,16 @@ async fn main() -> Result<()> {
         info!("Merkle trees loaded from database");
     }
 
-    // ── Root sync (must init before relay_coordinator) ──────────────
+    // ── Shared batch notification channel ───────────────────────────
+    let batch_notify = Arc::new(Notify::new());
+
+    // ── Root sync coordinator ────────────────────────────────────────
     let root_sync_coordinator = Arc::new(RootSyncCoordinator::new(
         database.clone(),
         evm_relayer.clone(),
         starknet_relayer.clone(),
         merkle_manager.clone(),
-        30,
+        batch_notify.clone(),
     ));
 
     // ── Background services ─────────────────────────────────────────
@@ -128,6 +133,7 @@ async fn main() -> Result<()> {
             near_client.clone(),
             merkle_manager.clone(),
             10,
+            batch_notify.clone(),
         );
         async move { coordinator.start().await }
     });
@@ -141,7 +147,7 @@ async fn main() -> Result<()> {
             merkle_manager.clone(),
             config.server.relayer_private_key.clone(),
             15,
-            5,
+            10,
         );
         async move { coordinator.run().await }
     });

@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "name": "shadowswap-ethereum",
+  "name": "shadowswap-ethereum-mainnet",
   "abis": {
     "Settlement": {
       "path": "./abis/Settlement.json"

@@ -16,6 +16,8 @@ use tracing::{error, info, warn};
 
 use crate::models::models::{ChainId, RemoteRootSnapshot};
 
+// ── StarkNetRelayer ───────────────────────────────────────────────────────────
+
 /// Resolve a chain ID string (e.g., "SN_MAIN", "SN_SEPOLIA") to the starknet-rs Felt constant.
 fn resolve_starknet_chain_id(chain_id_str: &str) -> Result<Felt> {
     match chain_id_str {
@@ -186,6 +188,18 @@ impl StarkNetRelayer {
     //                   DESTINATION SIDE FUNCTIONS
     // ==============================================================
 
+    /// Settle a cross-chain intent and release tokens to the recipient.
+    ///
+    /// `dest_token`            — pass `Felt::ZERO` when no post-NEAR swap is needed
+    ///                           (STRK destination, or any case where token == dest_token).
+    ///                           Pass the dest token address when the contract should swap
+    ///                           STRK → dest token via AVNU.
+    /// `expected_dest_amount`  — AVNU quote buy_amount used as AVNU's route scoring reference
+    ///                           (token_to_amount). Pass `(Felt::ZERO, Felt::ZERO)` when no swap.
+    /// `min_dest_amount`       — minimum acceptable AVNU output (hard slippage floor).
+    ///                           Pass `(Felt::ZERO, Felt::ZERO)` when `dest_token` is zero.
+    /// `routes_calldata`       — raw felt slice from AVNU /swap/v2/build (includes length
+    ///                           prefix). Pass `&[]` when `dest_token` is zero.
     pub async fn settle_and_release(
         &self,
         intent_id: Felt,
@@ -193,22 +207,52 @@ impl StarkNetRelayer {
         recipient: Felt,
         token: Felt,
         amount: (Felt, Felt),
+        dest_token: Felt,
+        expected_dest_amount: (Felt, Felt),
+        min_dest_amount: (Felt, Felt),
+        routes_calldata: &[Felt],
     ) -> Result<Felt> {
         let account = self.require_account()?;
 
-        info!("💸 [StarkNet] Settling and releasing tokens");
+        let needs_swap = dest_token != Felt::ZERO && dest_token != token;
+
+        info!("💸 [StarkNet] settle_and_release (swap={})", needs_swap);
+
+        // Cairo calldata layout for settle_and_release:
+        //   intent_id              felt252
+        //   nullifier_hash         felt252
+        //   recipient              ContractAddress (felt252)
+        //   token                  ContractAddress (felt252)
+        //   amount                 u256 → (low: felt252, high: felt252)
+        //   dest_token             ContractAddress (felt252)
+        //   expected_dest_amount   u256 → (low: felt252, high: felt252)
+        //   min_dest_amount        u256 → (low: felt252, high: felt252)
+        //   routes                 Array<Route> → [len, ...serialized routes]
+        let mut calldata = vec![
+            intent_id,
+            nullifier_hash,
+            recipient,
+            token,
+            amount.0,
+            amount.1,
+            dest_token,
+            expected_dest_amount.0,
+            expected_dest_amount.1,
+            min_dest_amount.0,
+            min_dest_amount.1,
+        ];
+
+        if routes_calldata.is_empty() {
+            calldata.push(Felt::ZERO); // Empty Array<Route>: length = 0
+        } else {
+            // routes_calldata already includes the length prefix from /swap/v2/build
+            calldata.extend_from_slice(routes_calldata);
+        }
 
         let call = Call {
             to: self.contract_address,
             selector: get_selector_from_name("settle_and_release")?,
-            calldata: vec![
-                intent_id,
-                nullifier_hash,
-                recipient,
-                token,
-                amount.0,
-                amount.1,
-            ],
+            calldata,
         };
 
         let tx = account.execute_v3(vec![call]).send().await?;
@@ -604,10 +648,8 @@ impl StarkNetRelayer {
                 && event.keys[2] == settlement_addr
                 && event.data.len() >= 2
             {
-                // Token contract = event emitter (from_address field in event struct)
                 let token_address = format!("0x{:064x}", event.from_address);
 
-                // Amount is uint256: low u128 + high u128
                 let amount_low: u128 = event.data[0]
                     .to_biguint()
                     .try_into()
@@ -620,7 +662,7 @@ impl StarkNetRelayer {
                 let amount = (amount_high as u128)
                     .checked_shl(128)
                     .map(|h| h + amount_low as u128)
-                    .unwrap_or(amount_low as u128); // saturate; amounts this large are impossible
+                    .unwrap_or(amount_low as u128);
 
                 let amount_str = amount.to_string();
 
@@ -641,9 +683,6 @@ impl StarkNetRelayer {
         ))
     }
 
-    /// Confirm a transaction exists on StarkNet (any non-Rejected status).
-    /// Used by RelayCoordinator (relay stage) and SettlementCoordinator
-    /// symmetrically with EvmRelayer::verify_transaction_exists.
     pub async fn verify_transaction_exists(&self, tx_hash: &str) -> Result<bool> {
         let tx_hash_felt =
             Felt::from_hex(tx_hash).map_err(|e| anyhow!("Invalid StarkNet tx hash: {}", e))?;

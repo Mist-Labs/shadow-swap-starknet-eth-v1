@@ -161,6 +161,7 @@ impl IntentStore for Database {
                 shadow_intents::encrypted_nullifier.eq(&intent.encrypted_nullifier),
                 shadow_intents::created_at.eq(intent.created_at as i64),
                 shadow_intents::updated_at.eq(intent.updated_at as i64),
+                shadow_intents::dest_token.eq(&intent.dest_token),
             ))
             .on_conflict(shadow_intents::id)
             .do_update()
@@ -175,6 +176,7 @@ impl IntentStore for Database {
                 shadow_intents::encrypted_secret.eq(&intent.encrypted_secret),
                 shadow_intents::encrypted_nullifier.eq(&intent.encrypted_nullifier),
                 shadow_intents::updated_at.eq(Utc::now().timestamp()),
+                shadow_intents::dest_token.eq(&intent.dest_token),
             ))
             .execute(&mut conn)
             .context("Failed to save shadow intent")?;
@@ -345,7 +347,7 @@ impl IntentStore for Database {
 
         merkle_leaves
             .filter(tree_name.eq(name))
-            .order(leaf_id.asc())
+            .order(leaf_index.asc())
             .select(leaf)
             .load::<String>(&mut conn)
             .context("Failed to get merkle leaves")
@@ -356,14 +358,20 @@ impl IntentStore for Database {
 
         let mut conn = self.get_connection()?;
 
+        let next_index: i64 = merkle_leaves::table
+            .filter(merkle_leaves::tree_name.eq(name))
+            .count()
+            .get_result(&mut conn)
+            .context("Failed to get leaf count")?;
+
         diesel::insert_into(merkle_leaves::table)
             .values((
                 merkle_leaves::tree_name.eq(name),
                 merkle_leaves::leaf.eq(leaf_val),
+                merkle_leaves::leaf_index.eq(next_index as i32),
                 merkle_leaves::created_at.eq(Utc::now()),
             ))
-            .on_conflict((merkle_leaves::tree_name, merkle_leaves::leaf))
-            .do_nothing()
+            .on_conflict_do_nothing()
             .execute(&mut conn)
             .context("Failed to add merkle leaf")?;
 
@@ -422,10 +430,11 @@ struct DbShadowIntent {
     dest_tx_hash: Option<String>,
     settle_tx_hash: Option<String>,
     source_settle_tx_hash: Option<String>,
-    encrypted_secret: Option<String>,
-    encrypted_nullifier: Option<String>,
     created_at: i64,
     updated_at: i64,
+    encrypted_secret: Option<String>,
+    encrypted_nullifier: Option<String>,
+    dest_token: Option<String>,
 }
 
 impl From<DbShadowIntent> for ShadowIntent {
@@ -452,6 +461,7 @@ impl From<DbShadowIntent> for ShadowIntent {
             encrypted_nullifier: db.encrypted_nullifier,
             created_at: db.created_at as u64,
             updated_at: db.updated_at as u64,
+            dest_token: db.dest_token,
         }
     }
 }

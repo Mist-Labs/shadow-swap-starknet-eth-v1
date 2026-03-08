@@ -1,14 +1,14 @@
-use actix_web::{HttpRequest, HttpResponse, web};
+use actix_web::{web, HttpRequest, HttpResponse};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use serde_json::json;
+use sha2::Sha256;
 use tracing::{error, info, warn};
 
 use crate::{
-    AppState,
     api::model::{IndexerEventRequest, IndexerEventResponse},
     models::models::{ChainId, IntentStatus, IntentStore},
+    AppState,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -163,10 +163,7 @@ pub async fn handle_commitment_added(
         _ => return bad_request("Missing commitment in event_data"),
     };
 
-    let intent_id = request
-        .event_data
-        .get("intentId")
-        .and_then(|v| v.as_str());
+    let intent_id = request.event_data.get("intentId").and_then(|v| v.as_str());
 
     let chain = match chain_id_from_indexer(&request.chain) {
         Some(c) => c,
@@ -183,7 +180,10 @@ pub async fn handle_commitment_added(
         Some(request.log_index),
     ) {
         if e.to_string().contains("duplicate") || e.to_string().contains("unique") {
-            info!("Commitment {} already stored (idempotent)", &commitment[..18]);
+            info!(
+                "Commitment {} already stored (idempotent)",
+                &commitment[..18]
+            );
             return ok_response("Commitment already recorded");
         }
         error!("Failed to store commitment: {}", e);
@@ -191,10 +191,10 @@ pub async fn handle_commitment_added(
     }
 
     // Also add to Merkle tree
-    if let Err(e) = app_state.database.add_leaf(
-        &format!("{}_commitments", chain_key),
-        commitment,
-    ) {
+    if let Err(e) = app_state
+        .database
+        .add_leaf(&format!("{}_commitments", chain_key), commitment)
+    {
         error!("Failed to add Merkle leaf: {}", e);
     }
 
@@ -216,7 +216,11 @@ pub async fn handle_commitment_added(
         }
     }
 
-    ok_response(format!("Commitment {} recorded on {}", &commitment[..18], chain_key))
+    ok_response(format!(
+        "Commitment {} recorded on {}",
+        &commitment[..18],
+        chain_key
+    ))
 }
 
 // ============================================================================
@@ -228,16 +232,29 @@ pub async fn handle_settled_event(
     app_state: &web::Data<AppState>,
     request: &IndexerEventRequest,
 ) -> HttpResponse {
-    info!("Processing settled on {}", request.chain);
+    let is_swap = request
+        .event_data
+        .get("is_swap")
+        .and_then(|v| v.as_str())
+        .map(|v| v == "true")
+        .unwrap_or(false);
 
-    let commitment = match request
+    info!(
+        "Processing {} on {}",
+        if is_swap {
+            "settled_with_swap"
+        } else {
+            "settled"
+        },
+        request.chain
+    );
+
+    // ── commitment is OPTIONAL (settled_with_swap events don't have it) ──
+    let commitment = request
         .event_data
         .get("commitment")
         .and_then(|v| v.as_str())
-    {
-        Some(c) if !c.is_empty() => c,
-        _ => return bad_request("Missing commitment in event_data"),
-    };
+        .filter(|s| !s.is_empty());
 
     let nullifier_hash = request
         .event_data
@@ -245,14 +262,15 @@ pub async fn handle_settled_event(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let intent_id = match request
-        .event_data
-        .get("intentId")
-        .and_then(|v| v.as_str())
-    {
+    let intent_id = match request.event_data.get("intentId").and_then(|v| v.as_str()) {
         Some(id) if !id.is_empty() => id,
         _ => {
-            info!("Settled event for commitment {} (no intentId)", &commitment[..18]);
+            // Only log commitment if it exists
+            if let Some(c) = commitment {
+                info!("Settled event for commitment {} (no intentId)", &c[..18]);
+            } else {
+                info!("Settled event (no intentId, no commitment)");
+            }
             return ok_response("Settled event recorded (no intentId to update)");
         }
     };
@@ -266,14 +284,22 @@ pub async fn handle_settled_event(
         .database
         .update_intent_settle_tx(intent_id, &request.transaction_hash)
     {
-        warn!("Failed to update settle_tx_hash for {}: {}", &intent_id[..10], e);
+        warn!(
+            "Failed to update settle_tx_hash for {}: {}",
+            &intent_id[..10],
+            e
+        );
     }
 
     if let Err(e) = app_state
         .database
         .update_intent_status(intent_id, IntentStatus::Settled)
     {
-        error!("Failed to update intent {} to Settled: {}", &intent_id[..10], e);
+        error!(
+            "Failed to update intent {} to Settled: {}",
+            &intent_id[..10],
+            e
+        );
         return internal_error("Failed to update intent status", e);
     }
 
@@ -288,8 +314,9 @@ pub async fn handle_settled_event(
     }
 
     info!(
-        "Intent {} settled on destination (nullifier: {})",
+        "Intent {} settled on destination{} (nullifier: {})",
         &intent_id[..10],
+        if is_swap { " via AVNU swap" } else { "" },
         &nullifier_hash[..18.min(nullifier_hash.len())]
     );
 
@@ -317,14 +344,13 @@ pub async fn handle_marked_settled_event(
         _ => return bad_request("Missing commitment in event_data"),
     };
 
-    let intent_id = match request
-        .event_data
-        .get("intentId")
-        .and_then(|v| v.as_str())
-    {
+    let intent_id = match request.event_data.get("intentId").and_then(|v| v.as_str()) {
         Some(id) if !id.is_empty() => id,
         _ => {
-            info!("MarkedSettled for commitment {} (no intentId)", &commitment[..18]);
+            info!(
+                "MarkedSettled for commitment {} (no intentId)",
+                &commitment[..18]
+            );
             return ok_response("MarkedSettled recorded (no intentId to update)");
         }
     };
@@ -338,14 +364,22 @@ pub async fn handle_marked_settled_event(
         .database
         .update_intent_source_settle_tx(intent_id, &request.transaction_hash)
     {
-        warn!("Failed to update source_settle_tx for {}: {}", &intent_id[..10], e);
+        warn!(
+            "Failed to update source_settle_tx for {}: {}",
+            &intent_id[..10],
+            e
+        );
     }
 
     if let Err(e) = app_state
         .database
         .update_intent_status(intent_id, IntentStatus::MarkedSettled)
     {
-        error!("Failed to update intent {} to MarkedSettled: {}", &intent_id[..10], e);
+        error!(
+            "Failed to update intent {} to MarkedSettled: {}",
+            &intent_id[..10],
+            e
+        );
         return internal_error("Failed to update intent status", e);
     }
 
@@ -423,14 +457,29 @@ pub async fn handle_batch_processed_event(
     _app_state: &web::Data<AppState>,
     request: &IndexerEventRequest,
 ) -> HttpResponse {
-    let batch_id = request.event_data.get("batch_id").and_then(|v| v.as_str()).unwrap_or("?");
-    let count = request.event_data.get("commitments_count").and_then(|v| v.as_str()).unwrap_or("?");
-    let reason = request.event_data.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+    let batch_id = request
+        .event_data
+        .get("batch_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let count = request
+        .event_data
+        .get("commitments_count")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let reason = request
+        .event_data
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
 
     info!(
         "BatchProcessed on {}: batch_id={} count={} reason={}",
         request.chain, batch_id, count, reason
     );
 
-    ok_response(format!("BatchProcessed acknowledged: batch_id={} count={}", batch_id, count))
+    ok_response(format!(
+        "BatchProcessed acknowledged: batch_id={} count={}",
+        batch_id, count
+    ))
 }

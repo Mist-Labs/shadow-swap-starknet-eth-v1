@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
+use ethers::types::H256;
 use starknet::core::types::Felt;
 use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
@@ -19,6 +21,7 @@ pub struct RelayCoordinator {
     near_client: Arc<NearClient>,
     merkle_manager: Arc<MerkleTreeManager>,
     poll_interval_secs: u64,
+    batch_notify: Arc<Notify>,
 }
 
 impl RelayCoordinator {
@@ -29,6 +32,7 @@ impl RelayCoordinator {
         near_client: Arc<NearClient>,
         merkle_manager: Arc<MerkleTreeManager>,
         poll_interval_secs: u64,
+        batch_notify: Arc<Notify>,
     ) -> Self {
         Self {
             store,
@@ -37,6 +41,7 @@ impl RelayCoordinator {
             near_client,
             merkle_manager,
             poll_interval_secs,
+            batch_notify,
         }
     }
 
@@ -58,17 +63,37 @@ impl RelayCoordinator {
 
     async fn process_all_stages(&self) -> Result<()> {
         self.process_pending_intents().await?;
+        self.try_process_evm_batch().await;
         self.try_process_starknet_batch().await;
         self.process_batched_intents().await?;
         self.process_near_submitted().await?;
         Ok(())
     }
 
+    async fn try_process_evm_batch(&self) {
+        match self.evm_relayer.get_pending_batch_info().await {
+            Ok((count, _, time_remaining)) if count > 0 && time_remaining == 0 => {
+                match self.evm_relayer.process_batch_if_timeout().await {
+                    Ok(tx) => info!("✅ EVM batch processed: {:?}", tx),
+                    Err(e) => error!("❌ EVM batch processing failed: {}", e),
+                }
+            }
+            Ok((count, _, time_remaining)) if count > 0 => {
+                info!(
+                    "⏳ EVM batch has {} commitments, {}s remaining",
+                    count, time_remaining
+                );
+            }
+            Err(e) => error!("Failed to get EVM batch info: {}", e),
+            _ => {}
+        }
+    }
+
     async fn try_process_starknet_batch(&self) {
         match self.starknet_relayer.get_pending_batch_info().await {
             Ok((count, _, _)) if count > 0 => {
                 match self.starknet_relayer.process_batch_if_timeout().await {
-                    Ok(tx) => info!("StarkNet batch processed: 0x{:x}", tx),
+                    Ok(tx) => info!("✅ StarkNet batch processed: 0x{:x}", tx),
                     Err(_) => {}
                 }
             }
@@ -97,15 +122,17 @@ impl RelayCoordinator {
             intent.source_chain
         );
 
-        match intent.source_chain {
+        let already_on_chain = match intent.source_chain {
             ChainId::Evm => {
-                self.evm_relayer
+                let tx = self
+                    .evm_relayer
                     .add_to_pending_batch(
                         &intent.commitment,
                         &intent.near_intents_id,
                         &intent.view_key,
                     )
                     .await?;
+                tx == H256::zero()
             }
             ChainId::Starknet => {
                 let commitment = str_to_felt(&intent.commitment)?;
@@ -115,15 +142,36 @@ impl RelayCoordinator {
                 self.starknet_relayer
                     .add_to_pending_batch(commitment, near_id, view_key)
                     .await?;
+                false
             }
-        }
+        };
 
-        self.merkle_manager
-            .add_commitment(intent.source_chain, &intent.commitment)
-            .await?;
+        if !already_on_chain {
+            match self
+                .merkle_manager
+                .add_commitment(intent.source_chain, &intent.commitment)
+                .await
+            {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("Commitment already exists in tree") => {
+                    warn!(
+                        "Commitment {} already in tree — skipping merkle add",
+                        &intent.id[..16]
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            warn!(
+                "Commitment {} already on-chain — skipping merkle add",
+                &intent.id[..16]
+            );
+        }
 
         self.store
             .update_intent_status(&intent.id, IntentStatus::Batched)?;
+
+        self.batch_notify.notify_one();
 
         info!("Intent {} batched", &intent.id[..16]);
         Ok(())
@@ -150,7 +198,6 @@ impl RelayCoordinator {
 
     // ==============================================================
     //  STAGE 3: NearSubmitted -> TokensDelivered
-    //  Poll NEAR 1Click by deposit_address
     // ==============================================================
 
     async fn process_near_submitted(&self) -> Result<()> {
@@ -232,9 +279,6 @@ impl RelayCoordinator {
         Ok(())
     }
 
-    /// Confirm the destination tx exists at relay stage.
-    /// Full Transfer-to-settlement event verification happens later in
-    /// SettlementCoordinator::verify_token_delivery for both chains.
     async fn verify_delivery(&self, intent: &ShadowIntent, tx_hash: &str) -> Result<bool> {
         match intent.dest_chain {
             ChainId::Evm => self.evm_relayer.verify_transaction_exists(tx_hash).await,

@@ -1,2 +1,2 @@
-pub mod near_client;
 pub mod model;
+pub mod near_client;

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use starknet::core::types::Felt;
 use std::sync::Arc;
+use tokio::sync::{Notify, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
@@ -18,7 +19,9 @@ pub struct RootSyncCoordinator {
     evm_relayer: Arc<EvmRelayer>,
     starknet_relayer: Arc<StarkNetRelayer>,
     merkle_manager: Arc<MerkleTreeManager>,
-    sync_interval_secs: u64,
+    batch_notify: Arc<Notify>,
+    last_synced_evm_root: RwLock<String>,
+    last_synced_starknet_root: RwLock<String>,
 }
 
 impl RootSyncCoordinator {
@@ -27,27 +30,24 @@ impl RootSyncCoordinator {
         evm_relayer: Arc<EvmRelayer>,
         starknet_relayer: Arc<StarkNetRelayer>,
         merkle_manager: Arc<MerkleTreeManager>,
-        sync_interval_secs: u64,
+        batch_notify: Arc<Notify>,
     ) -> Self {
         Self {
             store,
             evm_relayer,
             starknet_relayer,
             merkle_manager,
-            sync_interval_secs,
+            batch_notify,
+            last_synced_evm_root: RwLock::new(String::new()),
+            last_synced_starknet_root: RwLock::new(String::new()),
         }
     }
 
     pub async fn sync_all_roots(&self) -> Result<()> {
-        let results = tokio::join!(
-            self.sync_evm_root_to_starknet(),
-            self.sync_starknet_root_to_evm()
-        );
-
-        if let Err(e) = results.0 {
+        if let Err(e) = self.sync_evm_root_to_starknet().await {
             error!("❌ EVM → StarkNet root sync: {}", e);
         }
-        if let Err(e) = results.1 {
+        if let Err(e) = self.sync_starknet_root_to_evm().await {
             error!("❌ StarkNet → EVM root sync: {}", e);
         }
 
@@ -64,10 +64,12 @@ impl RootSyncCoordinator {
 
         let chain_id_felt = Felt::from(ChainId::Evm.as_u64());
 
-        // Truncate EVM root (256-bit) to fit StarkNet Felt (252-bit) once,
-        // so the comparison uses the same value that was (or will be) stored on-chain.
         let root_felt = truncate_root_to_felt(&local_root)?;
         let root_felt_hex = format!("0x{:064x}", root_felt);
+
+        if *self.last_synced_evm_root.read().await == root_felt_hex {
+            return Ok(());
+        }
 
         let remote = self
             .starknet_relayer
@@ -76,15 +78,13 @@ impl RootSyncCoordinator {
 
         let needs_sync = match remote {
             Ok(snapshot) => {
-                // Normalize both to 64-char zero-padded hex before comparing.
-                // felt_to_hex uses {:x} (no padding), root_felt_hex uses {:064x}.
                 let remote_norm = format!(
                     "0x{:0>64}",
                     snapshot.root.to_lowercase().trim_start_matches("0x")
                 );
                 remote_norm != root_felt_hex.to_lowercase()
             }
-            Err(_) => true, // No root synced yet — proceed with first sync
+            Err(_) => true,
         };
 
         if needs_sync {
@@ -99,6 +99,8 @@ impl RootSyncCoordinator {
 
             info!("✅ Root synced to StarkNet, tx: 0x{:x}", tx);
 
+            *self.last_synced_evm_root.write().await = root_felt_hex;
+
             self.store.log_transaction(
                 "root_sync",
                 ChainId::Starknet,
@@ -112,18 +114,12 @@ impl RootSyncCoordinator {
     }
 
     async fn sync_starknet_root_to_evm(&self) -> Result<()> {
-        let leaf_count = self
-            .merkle_manager
-            .get_leaf_count(ChainId::Starknet)
-            .await;
+        let leaf_count = self.merkle_manager.get_leaf_count(ChainId::Starknet).await;
 
         if leaf_count == 0 {
             return Ok(());
         }
 
-        // get_root calls compute_root which may fail if the StarkNet tree contains
-        // leaves that are >= the Felt prime (e.g. old bad data from a key mismatch).
-        // Warn and skip this cycle rather than propagating as an error.
         let local_root = match self.merkle_manager.get_root(ChainId::Starknet).await {
             Ok(root) => root,
             Err(e) => {
@@ -136,6 +132,10 @@ impl RootSyncCoordinator {
             return Ok(());
         }
 
+        if *self.last_synced_starknet_root.read().await == local_root {
+            return Ok(());
+        }
+
         let remote = self
             .evm_relayer
             .get_latest_remote_root(ChainId::Starknet.as_chain_id_str())
@@ -143,7 +143,6 @@ impl RootSyncCoordinator {
 
         let needs_sync = match remote {
             Ok(snapshot) => {
-                // Normalize both to 64-char zero-padded hex before comparing.
                 let remote_norm = format!(
                     "0x{:0>64}",
                     snapshot.root.to_lowercase().trim_start_matches("0x")
@@ -154,25 +153,20 @@ impl RootSyncCoordinator {
                 );
                 remote_norm != local_norm
             }
-            Err(_) => true, // No root synced yet — proceed with first sync
+            Err(_) => true,
         };
 
         if needs_sync {
-            info!(
-                "🌉 [StarkNet → EVM] Syncing root: {}",
-                &local_root[..16]
-            );
+            info!("🌉 [StarkNet → EVM] Syncing root: {}", &local_root[..16]);
 
             let tx = self
                 .evm_relayer
-                .sync_merkle_root(
-                    ChainId::Starknet.as_chain_id_str(),
-                    &local_root,
-                    leaf_count,
-                )
+                .sync_merkle_root(ChainId::Starknet.as_chain_id_str(), &local_root, leaf_count)
                 .await?;
 
             info!("✅ Root synced to EVM, tx: {:?}", tx);
+
+            *self.last_synced_starknet_root.write().await = local_root;
 
             self.store.log_transaction(
                 "root_sync",
@@ -187,42 +181,54 @@ impl RootSyncCoordinator {
     }
 
     pub async fn run(self: Arc<Self>) {
-        info!(
-            "🔄 RootSyncCoordinator started ({}s interval)",
-            self.sync_interval_secs
-        );
+        info!("🔄 RootSyncCoordinator started (event-driven + 5min fallback)");
+
+        let fallback_interval = Duration::from_secs(30);
 
         loop {
-            if let Err(e) = self.sync_all_roots().await {
-                error!("❌ Root sync cycle failed: {}", e);
+            // Wake on new commitment OR after 5 min — whichever comes first
+            tokio::select! {
+                _ = self.batch_notify.notified() => {
+                    info!("🔔 Batch notification — syncing roots");
+                }
+                _ = sleep(fallback_interval) => {
+                    info!("⏰ Fallback timer — syncing roots");
+                }
             }
-            sleep(Duration::from_secs(self.sync_interval_secs)).await;
+
+            for attempt in 1..=3 {
+                match self.sync_all_roots().await {
+                    Ok(()) => break,
+                    Err(e) => {
+                        error!("❌ Root sync failed (attempt {}/3): {}", attempt, e);
+                        if attempt < 3 {
+                            sleep(Duration::from_secs(10 * attempt)).await;
+                        }
+                    }
+                }
+            }
         }
     }
-
 }
 
 fn u256_from_u64(value: u64) -> (Felt, Felt) {
     (Felt::from(value), Felt::ZERO)
 }
 
-/// Truncate 256-bit EVM root to 252-bit StarkNet Felt
-/// StarkNet Felt max: 2^252 - 1 (0x0800000000000011000000000000000000000000000000000000000000000000)
 fn truncate_root_to_felt(root_hex: &str) -> Result<Felt> {
     use num_bigint::BigUint;
     use num_traits::Num;
 
     let root_clean = root_hex.strip_prefix("0x").unwrap_or(root_hex);
-    let root_bigint = BigUint::from_str_radix(root_clean, 16)
-        .map_err(|e| anyhow!("Invalid root hex: {}", e))?;
+    let root_bigint =
+        BigUint::from_str_radix(root_clean, 16).map_err(|e| anyhow!("Invalid root hex: {}", e))?;
 
-    // Felt max value (2^252 - 1)
     let felt_max = BigUint::from_str_radix(
         "0800000000000011000000000000000000000000000000000000000000000000",
-        16
-    ).unwrap();
+        16,
+    )
+    .unwrap();
 
-    // Truncate by taking modulo
     let truncated = root_bigint % felt_max;
     let truncated_hex = format!("0x{:064x}", truncated);
 
