@@ -18,14 +18,15 @@ StarkNet Contract → Apibara v2 → PostgreSQL → Backend Relayer (HMAC webhoo
 | Event | Description |
 |-------|-------------|
 | `CommitmentAdded` | Commitment added to on-chain Merkle tree |
-| `IntentSettled` | Settlement completed on destination chain |
+| `IntentSettled` | Settlement completed — direct token delivery, no swap |
+| `IntentSettledWithSwap` | Settlement completed — STRK delivered and swapped to dest token via AVNU |
 | `IntentMarkedSettled` | Settlement marked on source chain |
 | `MerkleRootUpdated` | Merkle root updated after batch processed |
 | `BatchProcessed` | Pending batch sealed on-chain |
 
 ## Contract Address
 
-**StarkNet Mainnet:** `0x07576cc5d7cd8f2cf82572a4b7bddeb2eac7de872cdfed575eff399c3ce86114`
+**StarkNet Mainnet:** `0x06563b21751c9e9eb852e48b01fda8c66a2e2a2b93c1b13cc85c150f21e7f8d0`
 
 **Starting block:** `6946374`
 
@@ -114,37 +115,47 @@ Set all environment variables in the platform dashboard and deploy normally.
 
 All tables are written by the indexer and read by the relayer.
 
-| Table | Source Event | Contents |
-|-------|-------------|----------|
+| Table | Source Event(s) | Contents |
+|-------|----------------|----------|
 | `commitments` | `CommitmentAdded` | commitment hash, near_intents_id, view_key, block/log index |
-| `intents_settled` | `IntentSettled` | intent_id, nullifier_hash, token, amount, timestamp |
+| `intents_settled` | `IntentSettled`, `IntentSettledWithSwap` | intent_id, nullifier_hash, token, amount, timestamp. For swap events: `is_swap=true`, `delivered_token`, `delivered_amount_low/high` also populated |
 | `intents_marked_settled` | `IntentMarkedSettled` | commitment, nullifier_hash |
 | `merkle_roots` | `MerkleRootUpdated` | root, leaf_count, timestamp |
 | `batches_processed` | `BatchProcessed` | batch_id, count, reason |
 
 ### Reindex from Scratch
 
-To replay all events from the starting block:
+Stop the indexer first, then run in the `shadow-swap-indexer` DB:
 
 ```sql
-DELETE FROM airfoil.checkpoints WHERE id = 'indexer_shadowswap_default';
+-- Reset Apibara cursor
+DELETE FROM airfoil.checkpoints;
+DELETE FROM airfoil.filters;
+
+-- Clear all indexed data
+TRUNCATE commitments RESTART IDENTITY CASCADE;
+TRUNCATE intents_settled RESTART IDENTITY CASCADE;
+TRUNCATE intents_marked_settled RESTART IDENTITY CASCADE;
+TRUNCATE merkle_roots RESTART IDENTITY CASCADE;
+TRUNCATE batches_processed RESTART IDENTITY CASCADE;
 ```
 
-The indexer uses Apibara's `airfoil` schema to track its checkpoint. Deleting it causes a full reindex on next startup.
+Then restart the indexer — it will replay all events from `startingBlock` and forward them to the relayer in block order.
 
 ---
 
 ## Event Keys
 
-Starknet Keccak256 selectors used to filter events:
+Selectors are computed at runtime via `starknet.js` `hash.getSelectorFromName`. The indexer does not hardcode selector hex values — it computes them on startup from event names, ensuring correctness regardless of Cairo version.
 
 ```typescript
 const EVENT_KEYS = {
-  CommitmentAdded:     "0x01b4bb6b29c34a4e5c9b868d74c58d9e28c4cfaa62b8c4cc3ea5876b18c6b9b7",
-  IntentSettled:       "0x03cf89e5fcb8ae2ace80fcf6e83f0e03ae63e1be22e4c1a1d08ab49f8293b0f6",
-  IntentMarkedSettled: "0x02b78c6fbe8ee2e86ebb1e29e3c3e2ff8b18d6e6f6bc2759d8c2a75e5ea8f7a9",
-  MerkleRootUpdated:   "0x01f42a07acee6e8e7fd03c4a7e8c0f8d9d4f7e60efd36ad9be1f8e4c6c5b2e8f",
-  BatchProcessed:      "0x036c9c5c5cdb4d1b0e5a8e6f3c1b8e7d2a4f6b9c7e8a1d3f5c7b9e2a4f6d8b0c",
+  CommitmentAdded:       pad64(hash.getSelectorFromName("CommitmentAdded")),
+  IntentSettled:         pad64(hash.getSelectorFromName("IntentSettled")),
+  IntentSettledWithSwap: pad64(hash.getSelectorFromName("IntentSettledWithSwap")),
+  IntentMarkedSettled:   pad64(hash.getSelectorFromName("IntentMarkedSettled")),
+  MerkleRootUpdated:     pad64(hash.getSelectorFromName("MerkleRootUpdated")),
+  BatchProcessed:        pad64(hash.getSelectorFromName("BatchProcessed")),
 };
 ```
 
@@ -153,7 +164,7 @@ const EVENT_KEYS = {
 ## Troubleshooting
 
 **Indexer not receiving events**
-- Verify `CONTRACT_ADDRESS` matches deployed contract
+- Verify `CONTRACT_ADDRESS` matches deployed contract (`0x06563b21751c9e9eb852e48b01fda8c66a2e2a2b93c1b13cc85c150f21e7f8d0`)
 - Confirm `startingBlock` is at or after the deployment block (`6946374`)
 - Check Apibara DNA token is valid at https://app.apibara.com
 - Ensure `DATABASE_URL` is accessible from the indexer host
@@ -169,5 +180,5 @@ const EVENT_KEYS = {
 - Check relayer logs for `401` authentication errors
 
 **Stuck / stale indexer**
-- Delete the Apibara checkpoint and restart (see Reindex above)
+- Stop the indexer, run the full reindex SQL above, then restart (see Reindex section)
 - Check Apibara stream status at https://status.apibara.com
