@@ -2,7 +2,7 @@
 
 Cairo settlement contract for the ShadowSwap Privacy Bridge on StarkNet Mainnet. Handles commitment batching, cross-chain Merkle root syncing, nullifier-based settlement, and token release.
 
-**Mainnet:** `0x07576cc5d7cd8f2cf82572a4b7bddeb2eac7de872cdfed575eff399c3ce86114`
+**Mainnet:** `0x06563b21751c9e9eb852e48b01fda8c66a2e2a2b93c1b13cc85c150f21e7f8d0`
 
 ---
 
@@ -16,8 +16,9 @@ User → add_to_pending_batch(commitment)
      → Merkle root updated
 
 NEAR delivers tokens to this contract
-     → Relayer calls settle_and_release(intent_id, nullifier, recipient, token, amount)
+     → Relayer calls settle_and_release(intent_id, nullifier, recipient, token, amount, dest_token, ...)
      → Contract verifies nullifier unused + remote root verified
+     → Optionally swaps via AVNU (if dest_token != token)
      → Transfers token to recipient
 ```
 
@@ -92,7 +93,22 @@ Marks a previously synced remote root snapshot as verified. Required before `set
 
 ### Destination Side
 
-#### `settle_and_release(intent_id: felt252, nullifier_hash: felt252, recipient: felt252, token: felt252, amount: u256)`
+#### `settle_and_release(intent_id, nullifier_hash, recipient, token, amount, dest_token, expected_dest_amount, min_dest_amount, routes)`
+
+```python
+settle_and_release(
+    intent_id:            felt252,
+    nullifier_hash:       felt252,
+    recipient:            felt252,
+    token:                felt252,       # delivered token address (always STRK from NEAR)
+    amount:               u256,          # delivered amount
+    dest_token:           felt252,       # 0 if no swap needed
+    expected_dest_amount: u256,          # AVNU quote buy_amount; (0,0) if no swap
+    min_dest_amount:      u256,          # hard slippage floor; (0,0) if no swap
+    routes:               Array<Route>   # AVNU route calldata; empty array if no swap
+)
+```
+
 Releases tokens to recipient. Called by authorized relayer after NEAR delivers tokens to this contract.
 
 Checks:
@@ -101,10 +117,14 @@ Checks:
 3. Token is whitelisted
 4. Contract holds sufficient balance
 
+If `dest_token` is non-zero and differs from `token`, the contract calls AVNU's `multi_route_swap` to swap the delivered token before releasing to the recipient.
+
 ```python
-# Relayer passes actual delivered token/amount from NEAR StarkNet dest tx
-# NOT the source chain token — NEAR swaps (e.g. USDT → STRK)
-settle_and_release(intent_id, nullifier_hash, recipient, delivered_token, delivered_amount)
+# No swap — deliver STRK directly
+settle_and_release(intent_id, nullifier_hash, recipient, STRK, amount, 0, (0,0), (0,0), [])
+
+# Swap STRK → USDC via AVNU
+settle_and_release(intent_id, nullifier_hash, recipient, STRK, amount, USDC, buy_amount, min_amount, routes)
 ```
 
 ---
@@ -217,12 +237,12 @@ Halt all state-changing operations. Owner only.
 ## Events
 
 ```
-CommitmentAdded   { commitment, near_intents_id, view_key, batch_index }
-BatchProcessed    { batch_id, root, leaf_count, timestamp }
-MerkleRootUpdated { root, leaf_count, timestamp }
-IntentSettled     { intent_id, nullifier_hash, token, amount, timestamp }
+CommitmentAdded     { commitment, near_intents_id, view_key, batch_index }
+BatchProcessed      { batch_id, root, leaf_count, timestamp }
+MerkleRootUpdated   { root, leaf_count, timestamp }
+IntentSettled       { intent_id, nullifier_hash, token, amount, timestamp }
 IntentMarkedSettled { commitment, nullifier_hash }
-RemoteRootSynced  { chain_id, root, leaf_count, snapshot_index }
+RemoteRootSynced    { chain_id, root, leaf_count, snapshot_index }
 ```
 
 ---
@@ -240,13 +260,14 @@ RemoteRootSynced  { chain_id, root, leaf_count, snapshot_index }
 
 ## Token Handling
 
-NEAR swaps the source token to the destination token before delivering to this contract. The relayer reads the actual delivered token and amount from the StarkNet destination tx events.
+NEAR always delivers **STRK** to this contract regardless of the source token. The relayer reads the actual delivered token and amount from the StarkNet destination tx Transfer event, then optionally swaps to the user's desired destination token via AVNU.
 
-| Source | Destination | Delivered To Contract |
-|--------|-------------|----------------------|
-| USDT (Ethereum) | STRK (StarkNet) | STRK token |
-| ETH (Ethereum) | STRK (StarkNet) | STRK token |
-| USDC (Ethereum) | STRK (StarkNet) | STRK token |
+| Source | User's dest_token | Delivered To Contract | Final Released |
+|--------|-------------------|-----------------------|----------------|
+| USDT (Ethereum) | STRK | STRK | STRK (no swap) |
+| ETH (Ethereum) | STRK | STRK | STRK (no swap) |
+| USDC (Ethereum) | USDC (StarkNet) | STRK | USDC (AVNU swap) |
+| USDT (Ethereum) | USDC (StarkNet) | STRK | USDC (AVNU swap) |
 
 > The relayer always reads the Transfer event from the delivery tx — `event.keys[2] == settlement_contract` — to determine what was actually delivered, not what the source intent declared.
 
@@ -265,7 +286,7 @@ set_root_verifier_status(relayer_wallet_felt, True)
 
 # 3. Whitelist tokens you intend to settle
 set_token_whitelist(STRK_TOKEN_ADDRESS, True)
-set_token_whitelist(ETH_TOKEN_ADDRESS, True)
+set_token_whitelist(USDC_TOKEN_ADDRESS, True)
 # add others as needed
 ```
 
@@ -292,10 +313,22 @@ A separate Apibara v2 indexer (`packages/indexers/starknet`) watches this contra
 
 **Starting block:** `6946374`
 
-To reindex from scratch:
+To reindex from scratch (run in `shadow-swap-indexer` DB, indexer must be stopped first):
+
 ```sql
-DELETE FROM airfoil.checkpoints WHERE id = 'indexer_shadowswap_default';
+-- Reset Apibara cursor
+DELETE FROM airfoil.checkpoints;
+DELETE FROM airfoil.filters;
+
+-- Clear all indexed data
+TRUNCATE commitments RESTART IDENTITY CASCADE;
+TRUNCATE intents_settled RESTART IDENTITY CASCADE;
+TRUNCATE intents_marked_settled RESTART IDENTITY CASCADE;
+TRUNCATE merkle_roots RESTART IDENTITY CASCADE;
+TRUNCATE batches_processed RESTART IDENTITY CASCADE;
 ```
+
+Then restart the indexer — it will replay from `startingBlock` and forward all events to the relayer.
 
 ---
 
