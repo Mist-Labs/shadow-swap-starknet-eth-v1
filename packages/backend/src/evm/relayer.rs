@@ -95,15 +95,6 @@ impl EvmRelayer {
 
         info!("📝 [EVM] Adding commitment to pending batch");
 
-        // Pre-check: if commitment already exists on-chain, skip submission
-        if self.commitment_exists(commitment).await? {
-            warn!(
-                "⚠️  [EVM] Commitment {} already exists on-chain — skipping batch add",
-                &commitment[..18.min(commitment.len())]
-            );
-            return Ok(H256::zero());
-        }
-
         let commitment_bytes: [u8; 32] = hex_to_bytes32(commitment)?;
         let near_id_bytes: [u8; 32] = hex_to_bytes32_padded(&near_intents_id.replace('-', ""))?;
         let view_key_bytes: [u8; 32] = hex_to_bytes32(view_key)?;
@@ -139,7 +130,8 @@ impl EvmRelayer {
     }
 
     pub async fn get_pending_batch_info(&self) -> Result<(u64, u64, u64)> {
-        let contract = ShadowSettlementContract::new(self.contract_address, self.provider.clone());
+        let contract =
+            ShadowSettlementContract::new(self.contract_address, self.provider.clone());
 
         let (count, first_submission_time, time_remaining) =
             contract.get_pending_batch_info().call().await?;
@@ -347,15 +339,18 @@ impl EvmRelayer {
     // ===== TOKEN TRANSFER VERIFICATION =====
 
     pub async fn verify_transaction_exists(&self, tx_hash: &str) -> Result<bool> {
+        // NEAR sometimes strips leading zeros from tx hashes — normalize to full 32 bytes
+        let tx_hash = normalize_tx_hash(tx_hash);
+
         info!(
             "🔍 [EVM] Verifying TX exists: {}",
             &tx_hash[..18.min(tx_hash.len())]
         );
 
-        let tx_hash: H256 = tx_hash.parse()?;
+        let hash: H256 = tx_hash.parse()?;
         let receipt = self
             .provider
-            .get_transaction_receipt(tx_hash)
+            .get_transaction_receipt(hash)
             .await?
             .ok_or_else(|| anyhow!("Transaction receipt not found"))?;
 
@@ -374,15 +369,17 @@ impl EvmRelayer {
         expected_token: &str,
         expected_amount: &str,
     ) -> Result<bool> {
+        let tx_hash = normalize_tx_hash(tx_hash);
+
         info!(
             "🔍 [EVM] Verifying Transfer event in tx: {}",
-            &tx_hash[..18]
+            &tx_hash[..18.min(tx_hash.len())]
         );
 
-        let tx_hash: H256 = tx_hash.parse()?;
+        let hash: H256 = tx_hash.parse()?;
         let receipt = self
             .provider
-            .get_transaction_receipt(tx_hash)
+            .get_transaction_receipt(hash)
             .await?
             .ok_or_else(|| anyhow!("Transaction receipt not found"))?;
 
@@ -415,6 +412,8 @@ impl EvmRelayer {
     }
 
     pub async fn get_delivered_token_and_amount(&self, tx_hash: &str) -> Result<(String, String)> {
+        let tx_hash = normalize_tx_hash(tx_hash);
+
         info!(
             "🔍 [EVM] Reading delivered token/amount from tx: {}",
             &tx_hash[..18.min(tx_hash.len())]
@@ -546,6 +545,19 @@ impl EvmRelayer {
     }
 }
 
+// ===== HELPERS =====
+
+/// NEAR sometimes returns tx hashes with leading zeros stripped.
+/// Pad to full 66 chars (0x + 64 hex) before parsing as H256.
+fn normalize_tx_hash(hash: &str) -> String {
+    let stripped = hash.trim_start_matches("0x");
+    if stripped.len() < 64 {
+        format!("0x{:0>64}", stripped)
+    } else {
+        hash.to_string()
+    }
+}
+
 fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
     let hex = hex.trim_start_matches("0x");
     let bytes = hex::decode(hex).context("Invalid hex string")?;
@@ -571,6 +583,24 @@ fn hex_to_bytes32_padded(hex: &str) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_tx_hash_short() {
+        let short = "0x4a6192606b64cb9498a49a3ed293991951431930deb756790f6d68ac33eb0c4";
+        let normalized = normalize_tx_hash(short);
+        assert_eq!(normalized.len(), 66);
+        assert_eq!(
+            normalized,
+            "0x04a6192606b64cb9498a49a3ed293991951431930deb756790f6d68ac33eb0c4"
+        );
+    }
+
+    #[test]
+    fn test_normalize_tx_hash_full() {
+        let full = "0x04a6192606b64cb9498a49a3ed293991951431930deb756790f6d68ac33eb0c4";
+        let normalized = normalize_tx_hash(full);
+        assert_eq!(normalized, full);
+    }
 
     #[test]
     fn test_hex_to_bytes32() {
