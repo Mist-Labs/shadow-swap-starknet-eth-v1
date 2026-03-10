@@ -117,21 +117,15 @@ export function generateStarknetPrivacyParams({
     const secretFelt = BigInt(_secret)
     const nullifierFelt = BigInt(_nullifier)
     const tokenFelt = BigInt(token)
-    
-    // Split u256 amount into low/high 128-bit values for Cairo compatibility
-    const amountBI = BigInt(amount)
-    const mask128 = (BigInt(1) << BigInt(128)) - BigInt(1)
-    const amountLow = amountBI & mask128
-    const amountHigh = amountBI >> BigInt(128)
+    const amountFelt = BigInt(amount)
 
-    // commitment = poseidon_hash_many([secret, nullifier, amount_low, amount_high, token, destChain])
+    // commitment = poseidon_hash_many([secret, nullifier, amount, token, destChain])
     const commitment =
         "0x" +
         hash.computePoseidonHashOnElements([
             secretFelt,
             nullifierFelt,
-            amountLow,
-            amountHigh,
+            amountFelt,
             tokenFelt,
             DEST_CHAIN_ID
         ])
@@ -150,12 +144,18 @@ export function generateStarknetPrivacyParams({
 /**
  * Derive deterministic view key
  */
-export function deriveViewKey(walletAddress: string, sourceChain: string): string {
+export function deriveViewKey(walletAddress: string, sourceChain: string, destChain: string): string {
+    const isDestStarknet = destChain === "starknet" || destChain === "evm" ? destChain === "starknet" : false // Normalize
+    
     if (sourceChain === "evm" || sourceChain === "ethereum") {
-        return "0x" + keccak256(walletAddress.toLowerCase() + DOMAIN)
+        const hashHex = keccak256(walletAddress.toLowerCase() + DOMAIN)
+        // If destination is Starknet, we must truncate to 31 bytes to be felt-safe
+        const finalHex = isDestStarknet ? hashHex.slice(0, 62) : hashHex
+        return "0x" + finalHex.padStart(64, "0")
     } else {
         const addrFelt = BigInt(walletAddress)
         const domainFelt = BigInt("0x" + Buffer.from(DOMAIN).toString("hex"))
-        return "0x" + hash.computePoseidonHashOnElements([addrFelt, domainFelt]).replace("0x", "").padStart(64, "0")
+        const viewFelt = hash.computePoseidonHashOnElements([addrFelt, domainFelt])
+        return "0x" + viewFelt.replace("0x", "").padStart(64, "0")
     }
 }

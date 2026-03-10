@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import Header from "@/components/shared/header"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
@@ -109,10 +110,12 @@ export default function DocsPage() {
           </div>
 
           <div className="flex gap-3">
-            <Button className="bg-orange-500 hover:bg-orange-600">
-              <ExternalLink className="mr-2 h-4 w-4" />
-              Launch App
-            </Button>
+            <Link href="/bridge">
+              <Button className="bg-orange-500 hover:bg-orange-600">
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Launch App
+              </Button>
+            </Link>
             <Button variant="outline" className="border-neutral-700 bg-neutral-900 hover:bg-neutral-800">
               <FileText className="mr-2 h-4 w-4" />
               View Tutorial
