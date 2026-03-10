@@ -1,16 +1,11 @@
 "use client"
 
 import { useMemo } from "react"
-import { formatDistanceToNow } from "date-fns"
 import { motion } from "framer-motion"
 import Link from "next/link"
 import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-    CheckCircle2,
-    Clock,
-    XCircle,
     ArrowRight,
     Loader2,
     ExternalLink,
@@ -20,6 +15,8 @@ import {
 import { useBridgeIntents, formatChainName } from "@/hooks/useBridgeIntents"
 import { getTxUrl } from "@/lib/contracts"
 import type { ChainType } from "@/lib/tokens"
+import { formatTimeAgo, formatAmount, getTokenSymbol } from "@/lib/utils"
+import { BridgeStatusBadge, BridgeStatusIcon } from "./BridgeStatus"
 
 export default function RecentActivity() {
     const { intents, isLoading, isError, isFetching, refetch } = useBridgeIntents({ limit: 5 })
@@ -28,55 +25,6 @@ export default function RecentActivity() {
         const terminalStates = ["completed", "refunded", "failed"]
         return intents.filter((i) => !terminalStates.includes(i.status)).length
     }, [intents])
-
-
-
-    const formatTimeAgo = (dateValue: string | number | undefined) => {
-        if (!dateValue) return "–"
-        try {
-            const date =
-                typeof dateValue === "number"
-                    ? new Date(dateValue * 1000)
-                    : new Date(dateValue)
-            if (isNaN(date.getTime())) return "–"
-            return formatDistanceToNow(date, { addSuffix: true })
-        } catch {
-            return "–"
-        }
-    }
-
-    const getStatusIcon = (status: string) => {
-        switch (status) {
-            case "completed":
-                return <CheckCircle2 className="h-4 w-4 text-green-500" />
-            case "filled":
-                return <CheckCircle2 className="h-4 w-4 text-blue-500" />
-            case "committed":
-            case "created":
-                return <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
-            case "failed":
-                return <XCircle className="h-4 w-4 text-red-500" />
-            default:
-                return <Clock className="h-4 w-4 text-neutral-500" />
-        }
-    }
-
-    const getStatusBadge = (status: string) => {
-        const variants: Record<string, { class: string; text: string }> = {
-            completed: { class: "bg-green-500/10 text-green-500 border-green-500/20", text: "Completed" },
-            filled: { class: "bg-blue-500/10 text-blue-500 border-blue-500/20", text: "Filled" },
-            committed: { class: "bg-orange-500/10 text-orange-400 border-orange-500/20", text: "Committed" },
-            created: { class: "bg-orange-500/10 text-orange-500 border-orange-500/20", text: "Created" },
-            failed: { class: "bg-red-500/10 text-red-500 border-red-500/20", text: "Failed" },
-            refunded: { class: "bg-neutral-500/10 text-neutral-400 border-neutral-500/20", text: "Refunded" },
-        }
-        const v = variants[status] ?? variants.created
-        return (
-            <Badge variant="outline" className={`text-xs ${v.class}`}>
-                {v.text}
-            </Badge>
-        )
-    }
 
     // ── Loading skeleton ──────────────────────────────────────────────────────
     if (isLoading) {
@@ -197,13 +145,13 @@ export default function RecentActivity() {
 
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-3">
-                                    {getStatusIcon(intent.status)}
+                                    <BridgeStatusIcon status={intent.status} />
                                     <div>
                                         <div className="flex items-center gap-2">
                                             <span className="text-sm font-medium text-white">
-                                                {intent.amount} {intent.source_token}
+                                                {formatAmount(intent.amount, 6)} {getTokenSymbol(intent.source_token)}
                                             </span>
-                                            {getStatusBadge(intent.status)}
+                                            <BridgeStatusBadge status={intent.status} />
                                         </div>
                                         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-neutral-500">
                                             <span>{formatChainName(intent.source_chain)}</span>

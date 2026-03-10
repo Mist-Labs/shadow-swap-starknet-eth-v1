@@ -103,6 +103,21 @@ export const getTokenInfo = (symbol: string, chain: ChainType): TokenInfo | unde
 export const STRK_TOKEN = TOKENS.starknet.STRK!
 
 /**
+ * Look up token metadata by its address across all chains.
+ */
+export function lookupTokenByAddress(address: string): TokenInfo | undefined {
+    const lowerAddr = address.toLowerCase()
+    for (const chain of Object.values(TOKENS)) {
+        for (const token of Object.values(chain)) {
+            if (token.address.toLowerCase() === lowerAddr) {
+                return token
+            }
+        }
+    }
+    return undefined
+}
+
+/**
  * Validates that the selected destination token is compatible with the destination chain.
  * Prevents "Wrong Chain Delivery" by catching mismatches before bridge initiation.
  */

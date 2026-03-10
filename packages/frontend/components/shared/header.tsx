@@ -84,10 +84,10 @@ export default function Header() {
     const pathname = usePathname()
 
     const navItems = [
-        { name: "Bridge", href: "/bridge" },
-        { name: "Activity", href: "/activity" },
-        { name: "Stats", href: "/stats" },
-        { name: "Docs", href: "/docs" },
+        { name: "BRIDGE", href: "/bridge" },
+        { name: "ACTIVITY", href: "/activity" },
+        { name: "STATS", href: "/stats" },
+        { name: "DOCS", href: "/docs" },
     ]
 
     const isActive = (href: string) => pathname === href
@@ -109,7 +109,7 @@ export default function Header() {
                                 href={item.href}
                                 className={`text-sm transition-colors ${isActive(item.href) ? "font-semibold text-orange-500" : "text-neutral-400 hover:text-white"}`}
                             >
-                                {item.name.toUpperCase()}
+                                {item.name}
                             </Link>
                         ))}
                     </nav>
@@ -140,7 +140,7 @@ export default function Header() {
                                 onClick={() => setMobileMenuOpen(false)}
                                 className={`rounded px-3 py-2 text-left transition-colors ${isActive(item.href) ? "bg-orange-500 text-white" : "text-neutral-400 hover:bg-neutral-800 hover:text-white"}`}
                             >
-                                {item.name.toUpperCase()}
+                                {item.name}
                             </Link>
                         ))}
                     </nav>

@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query"
-import { formatDistanceToNow } from "date-fns"
 import { listBridgeIntents } from "@/lib/api"
 import type { IntentStatusResponse, IntentStatus } from "@/lib/api"
 import type { ChainType } from "@/lib/tokens"
@@ -55,34 +54,3 @@ export function formatChainName(chain: string) {
   return chain
 }
 
-export function formatTimeAgo(dateValue: string | number | undefined): string {
-  if (!dateValue) return "–"
-  try {
-    const date =
-      typeof dateValue === "number"
-        ? new Date(dateValue * 1000)  // unix timestamp → ms
-        : new Date(dateValue)
-    if (isNaN(date.getTime())) return "–"
-    return formatDistanceToNow(date, { addSuffix: true })
-  } catch {
-    return "–"
-  }
-}
-
-export function formatAmount(amount: string, decimals: number = 6): string {
-  try {
-    const value = BigInt(amount)
-    const divisor = BigInt(10 ** decimals)
-    const quotient = value / divisor
-    const remainder = value % divisor
-
-    if (remainder === BigInt(0)) return quotient.toString()
-
-    const remainderStr = remainder.toString().padStart(decimals, "0")
-    const trimmed = remainderStr.slice(0, Math.min(6, decimals)).replace(/0+$/, "")
-
-    return trimmed === "" ? quotient.toString() : `${quotient}.${trimmed}`
-  } catch {
-    return amount
-  }
-}
