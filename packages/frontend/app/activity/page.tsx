@@ -22,21 +22,20 @@ import {
   ExternalLink,
   Copy,
   Check,
-  CheckCircle2,
-  Clock,
-  XCircle,
   ArrowRight,
-  Loader2,
   RefreshCw,
   AlertCircle,
   Wifi,
+  Loader2,
 } from "lucide-react"
-import { useBridgeIntents, formatTimeAgo, formatChainName, formatAmount } from "@/hooks/useBridgeIntents"
+import { useBridgeIntents, formatChainName } from "@/hooks/useBridgeIntents"
 import { useAccount } from "wagmi"
 import { useAccount as useStarknetAccount } from "@starknet-react/core"
 import { deriveViewKey } from "@/lib/crypto"
 import type { IntentStatusResponse, IntentStatus } from "@/lib/api"
 import type { ChainType } from "@/lib/tokens"
+import { formatTimeAgo, formatAmount, getTokenSymbol } from "@/lib/utils"
+import { BridgeStatusBadge, BridgeStatusIcon } from "@/components/bridge/BridgeStatus"
 export default function ActivityPage() {
   const { address: evmAddress, isConnected: isEvmConnected } = useAccount()
   const { address: starknetAddress, isConnected: isStarknetConnected } = useStarknetAccount()
@@ -53,7 +52,10 @@ export default function ActivityPage() {
 
     if (isEvmConnected && evmAddress) {
       try {
-        keys.push(deriveViewKey(evmAddress, "ethereum"))
+        // We derive both potential view keys (for EVM-bound and Starknet-bound txs)
+        // because the derivation differs (31 vs 32 bytes) for EVM sources.
+        keys.push(deriveViewKey(evmAddress, "ethereum", "ethereum"))
+        keys.push(deriveViewKey(evmAddress, "ethereum", "starknet"))
       } catch (e) {
         console.warn("Failed to derive EVM view key", e)
       }
@@ -61,7 +63,8 @@ export default function ActivityPage() {
 
     if (isStarknetConnected && starknetAddress) {
       try {
-        keys.push(deriveViewKey(starknetAddress as string, "starknet"))
+        // Starknet source keys are always 31-byte poseidon hashes currently
+        keys.push(deriveViewKey(starknetAddress as string, "starknet", "ethereum"))
       } catch (e) {
         console.warn("Failed to derive Starknet view key", e)
       }
@@ -103,8 +106,8 @@ export default function ActivityPage() {
       header: "Status",
       cell: ({ row }) => (
         <div className="flex items-center gap-2">
-          {getStatusIcon(row.original.status)}
-          {getStatusBadge(row.original.status)}
+          <BridgeStatusIcon status={row.original.status} />
+          <BridgeStatusBadge status={row.original.status} />
         </div>
       ),
     },
@@ -212,82 +215,7 @@ export default function ActivityPage() {
   }
 
   // Helper to extract token symbol from address or return as-is if already a symbol
-  const getTokenSymbol = (token: string) => {
-    // If it starts with 0x, it's an address - try to determine symbol
-    if (token.startsWith("0x")) {
-      const lowerToken = token.toLowerCase();
 
-      // USDC addresses (Ethereum & Starknet Mainnet)
-      if (lowerToken === "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" ||
-        lowerToken === "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8") {
-        return "USDC"
-      }
-
-      // USDT addresses (Ethereum & Starknet Mainnet)
-      if (lowerToken === "0xdac17f958d2ee523a2206206994597c13d831ec7" ||
-        lowerToken === "0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8") {
-        return "USDT"
-      }
-
-      // WETH addresses
-      if (lowerToken === "0x50e8da97beeb8064714de45ce1f250879f3bd5b5" ||
-        lowerToken === "0xdeaddeaddeaddeaddeaddeaddeaddeaddead1111") {
-        return "WETH"
-      }
-
-      // MNT addresses
-      if (lowerToken === "0x65e37b558f64e2be5768db46df22f93d85741a9e" ||
-        lowerToken === "0x44fce297e4d6c5a50d28fb26a58202e4d49a13e7") {
-        return "MNT"
-      }
-
-      // ETH (native or starknet)
-      if (lowerToken === "0x0000000000000000000000000000000000000000" ||
-        lowerToken === "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7") {
-        return "ETH"
-      }
-
-      // Unknown token, show truncated address
-      return `${token.slice(0, 6)}...${token.slice(-4)}`
-    }
-    // Already a symbol
-    return token
-  }
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "completed":
-        return <CheckCircle2 className="h-4 w-4 text-green-500" />
-      case "filled":
-        return <CheckCircle2 className="h-4 w-4 text-blue-500" />
-      case "committed":
-      case "created":
-        return <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
-      case "refunded":
-        return <ArrowRight className="h-4 w-4 text-yellow-500" />
-      case "failed":
-        return <XCircle className="h-4 w-4 text-red-500" />
-      default:
-        return <Clock className="h-4 w-4 text-neutral-500" />
-    }
-  }
-
-  const getStatusBadge = (status: string) => {
-    const variants: Record<string, { class: string; text: string }> = {
-      completed: { class: "bg-green-500/10 text-green-500 border-green-500/20", text: "Completed" },
-      filled: { class: "bg-blue-500/10 text-blue-500 border-blue-500/20", text: "Filled" },
-      committed: { class: "bg-purple-500/10 text-purple-500 border-purple-500/20", text: "Committed" },
-      created: { class: "bg-orange-500/10 text-orange-500 border-orange-500/20", text: "Created" },
-      refunded: { class: "bg-yellow-500/10 text-yellow-500 border-yellow-500/20", text: "Refunded" },
-      failed: { class: "bg-red-500/10 text-red-500 border-red-500/20", text: "Failed" },
-    }
-    const variant = variants[status] || variants.created
-    return (
-      <Badge variant="outline" className={variant.class}>
-        {variant.text}
-      </Badge>
-    )
-  }
 
 
 
@@ -506,8 +434,8 @@ export default function ActivityPage() {
               <div className="flex items-center justify-between">
                 <span className="text-neutral-400">Status</span>
                 <div className="flex items-center gap-2">
-                  {getStatusIcon(selectedTx.status)}
-                  {getStatusBadge(selectedTx.status)}
+                  <BridgeStatusIcon status={selectedTx.status} />
+                  <BridgeStatusBadge status={selectedTx.status} />
                 </div>
               </div>
 
@@ -530,7 +458,7 @@ export default function ActivityPage() {
                 <span className="text-neutral-400">Amount</span>
                 <div className="text-right">
                   <div className="font-medium text-white">
-                    {formatAmount(selectedTx.amount)} {getTokenSymbol(selectedTx.source_token)}
+                    {formatAmount(selectedTx.amount, 6)} {getTokenSymbol(selectedTx.source_token)}
                   </div>
                   <div className="text-sm text-neutral-500">→ {getTokenSymbol(selectedTx.dest_token)}</div>
                 </div>
@@ -550,7 +478,7 @@ export default function ActivityPage() {
               <div className="flex items-center justify-between">
                 <span className="text-neutral-400">Last Updated</span>
                 <span className="text-white">
-                  {new Date(selectedTx.updated_at * 1000).toLocaleString()}
+                  {new Date(Number(selectedTx.updated_at) * 1000).toLocaleString()}
                 </span>
               </div>
 
@@ -558,7 +486,7 @@ export default function ActivityPage() {
               <div className="flex items-center justify-between">
                 <span className="text-neutral-400">Created</span>
                 <span className="text-white">
-                  {new Date(selectedTx.created_at * 1000).toLocaleString()}
+                  {new Date(Number(selectedTx.created_at) * 1000).toLocaleString()}
                 </span>
               </div>
 

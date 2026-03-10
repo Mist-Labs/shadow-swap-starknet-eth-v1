@@ -17,7 +17,8 @@ import {
   RefreshCw,
   AlertCircle,
 } from "lucide-react"
-import { useBridgeStats, useHealthCheck, calculateSuccessRate, formatLargeNumber } from "@/hooks/useBridgeStats"
+import { useBridgeStats, useHealthCheck } from "@/hooks/useBridgeStats"
+import { formatLargeNumber, calculateSuccessRate } from "@/lib/utils"
 import {
   LineChart,
   Line,
@@ -200,22 +201,23 @@ export default function StatsPage() {
             </div>
           </div>
 
-          {/* Error States */}
           {statsError && (
-            <div className="mb-6 flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-red-500">
+            <div className="mb-6 flex items-center gap-3 rounded-lg border-red-500/20 bg-red-500/10 p-4 text-red-500">
               <AlertCircle className="h-5 w-5" />
               <div>
-                <p className="font-medium">Error loading statistics</p>
-                <p className="text-sm text-red-400">{statsError}</p>
+                <p className="font-medium">{statsError.userMessage}</p>
+                {statsError.suggestion && <p className="text-sm text-red-400">{statsError.suggestion}</p>}
+                <p className="mt-1 text-xs opacity-50">{statsError.message}</p>
               </div>
             </div>
           )}
           {healthError && (
-            <div className="mb-6 flex items-center gap-3 rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-4 text-yellow-500">
+            <div className="mb-6 flex items-center gap-3 rounded-lg border-yellow-500/20 bg-yellow-500/10 p-4 text-yellow-500">
               <AlertCircle className="h-5 w-5" />
               <div>
-                <p className="font-medium">Error loading health status</p>
-                <p className="text-sm text-yellow-400">{healthError}</p>
+                <p className="font-medium">{healthError.userMessage}</p>
+                {healthError.suggestion && <p className="text-sm text-yellow-400">{healthError.suggestion}</p>}
+                <p className="mt-1 text-xs opacity-50">{healthError.message}</p>
               </div>
             </div>
           )}
