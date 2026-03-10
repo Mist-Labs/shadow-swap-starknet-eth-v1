@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react"
 import { parseUnits } from "viem"
-import { getAvnuQuote, type AvnuQuoteResult } from "@/lib/avnu"
+import { getAvnuQuote, type AvnuQuoteResult, AVNU_SLIPPAGE } from "@/lib/avnu"
 import { createNearSwapQuote, type NearQuoteResponse } from "@/lib/near"
 import { getTokenInfo, STRK_TOKEN, type ChainType } from "@/lib/tokens"
 import { ETHEREUM_CONTRACTS, STARKNET_CONTRACTS } from "@/lib/contracts"
@@ -50,7 +50,11 @@ export function useBridgeQuote() {
                     atomicAmount,
                     params.walletAddress
                 )
-                bridgeAmount = avnuQuote.strkAmount
+                // BASE ON MINIMUM GUARANTEED OUTPUT
+                // Deduct safety margin (e.g. 0.5%) to ensure the final transfer in multicall succeeds
+                const amountBig = BigInt(avnuQuote.strkAmount)
+                const bufferBig = (amountBig * BigInt(AVNU_SLIPPAGE * 10000)) / BigInt(10000)
+                bridgeAmount = (amountBig - bufferBig).toString()
             }
 
             // 2. Get NEAR quote

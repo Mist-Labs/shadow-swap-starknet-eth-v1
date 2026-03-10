@@ -12,7 +12,7 @@ import {
     deriveViewKey,
 } from "@/lib/crypto"
 import { submitDepositToNear } from "@/lib/near"
-import { getAvnuSwapCall, buildMulticall } from "@/lib/avnu"
+import { getAvnuSwapCall, buildMulticall, AVNU_SLIPPAGE } from "@/lib/avnu"
 import { initiateBridge } from "@/lib/api"
 import { getTokenInfo, STRK_TOKEN, type ChainType } from "@/lib/tokens"
 import { parseBridgeError, BridgeError } from "@/lib/errors"
@@ -112,7 +112,7 @@ export function useBridgeExecution() {
             // 5. Chain Execution
             if (needsMulticall && params.starknetAccount) {
                 setStep("swapping-to-strk")
-                const swapCall = await getAvnuSwapCall(params.quote.avnuQuote!.quote, params.walletAddress)
+                const swapCall = await getAvnuSwapCall(params.quote.avnuQuote!.quote, params.walletAddress, AVNU_SLIPPAGE)
                 const finalCalls = buildMulticall(
                     tokenInfo.address,
                     STRK_TOKEN.address,
