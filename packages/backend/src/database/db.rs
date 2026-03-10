@@ -371,7 +371,7 @@ impl IntentStore for Database {
                 merkle_leaves::leaf_index.eq(next_index as i32),
                 merkle_leaves::created_at.eq(Utc::now()),
             ))
-            .on_conflict_do_nothing()
+            // .on_conflict_do_nothing()
             .execute(&mut conn)
             .context("Failed to add merkle leaf")?;
 
