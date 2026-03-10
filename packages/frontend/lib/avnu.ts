@@ -5,6 +5,7 @@ import { type Call, cairo } from "starknet"
  * AVNU DEX router on StarkNet Mainnet.
  * Docs: https://doc.avnu.fi/
  */
+export const AVNU_SLIPPAGE = 0.005 // 0.5% safety margin
 
 export interface AvnuQuoteResult {
     /** STRK amount the user will receive (as decimal string in atomic units) */
@@ -46,7 +47,7 @@ export async function getAvnuQuote(
 export async function getAvnuSwapCall(
     quote: Quote,
     takerAddress: string,
-    slippage: number = 0.01
+    slippage: number = AVNU_SLIPPAGE
 ): Promise<Call> {
     const { calls } = await quoteToCalls({
         quoteId: quote.quoteId,
