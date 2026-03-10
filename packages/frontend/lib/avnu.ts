@@ -1,120 +1,107 @@
+import { getQuotes, quoteToCalls, type Quote } from "@avnu/avnu-sdk"
 import { type Call, cairo } from "starknet"
 
 /**
  * AVNU DEX router on StarkNet Mainnet.
  * Docs: https://doc.avnu.fi/
  */
-const AVNU_ROUTER = "0x04270219d365d6b017231b52e92b3fb5d7c8378b05e9abc97724537a80e93b0f"
-const AVNU_API = "https://starknet.api.avnu.fi"
 
 export interface AvnuQuoteResult {
     /** STRK amount the user will receive (as decimal string in atomic units) */
     strkAmount: string
-    /** Raw route calldata for the AVNU swap call */
-    routeCalldata: string[]
+    /** The full quote object from AVNU SDK */
+    quote: Quote
 }
 
 /**
- * Fetch the best AVNU swap quote: sellToken → STRK.
- * Used before bridging USDT or USDC from StarkNet via NEAR.
- *
- * @param sellTokenAddress - StarkNet address of the token to sell (USDT or USDC)
- * @param strkAddress      - STRK contract address
- * @param sellAmount       - Amount in atomic units (e.g. "1000000" for 1 USDT)
- * @param userAddress      - User's StarkNet address (STRK returned here)
+ * Fetch the best AVNU swap quote using the official SDK.
  */
 export async function getAvnuQuote(
     sellTokenAddress: string,
-    strkAddress: string,
+    buyTokenAddress: string,
     sellAmount: string,
-    userAddress: string,
-    slippageTolerance: number = 100  // 100 = 1%, per spec §multicall notes
+    takerAddress: string
 ): Promise<AvnuQuoteResult> {
-    const sellAmountHex = "0x" + BigInt(sellAmount).toString(16)
-    
-    const params = new URLSearchParams({
+    const quotes = await getQuotes({
         sellTokenAddress,
-        buyTokenAddress: strkAddress,
-        sellAmount: sellAmountHex,
-        takerAddress: userAddress,
-        slippageTolerance: slippageTolerance.toString(),
+        buyTokenAddress,
+        sellAmount: BigInt(sellAmount),
+        takerAddress,
     })
 
-    const res = await fetch(`${AVNU_API}/swap/v2/quotes?${params.toString()}`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json" }
-    })
-
-    if (!res.ok) {
-        const err = await res.text().catch(() => "")
-        throw new Error(`AVNU quote failed (${res.status}): ${err}`)
+    if (!quotes || quotes.length === 0) {
+        throw new Error("No swap route found on AVNU.")
     }
 
-    const data = await res.json()
-
-    if (!Array.isArray(data) || data.length === 0) {
-        throw new Error("No swap route found on AVNU. Insufficient liquidity or amount too small.")
-    }
-
-    const best = data[0]
+    const best = quotes[0]
     return {
-        // Convert buyAmount from hex (e.g. "0xf4240") back to base-10 string
-        strkAmount: BigInt(best.buyAmount).toString(10),
-        routeCalldata: best.routes[0].calldata as string[],
+        strkAmount: best.buyAmount.toString(),
+        quote: best,
     }
 }
 
 /**
- * Build the 3-call StarkNet multicall:
- *   1. approve(sellToken → AVNU router)
- *   2. multi_route_swap (AVNU: sellToken → STRK, STRK returned to user)
- *   3. transfer(STRK → NEAR deposit address)
- *
- * All 3 execute atomically — if any reverts, no funds move.
- *
- * @param sellTokenAddress - USDT or USDC contract address on StarkNet
- * @param strkAddress      - STRK contract address
- * @param sellAmount       - Amount to sell in atomic units
- * @param strkAmount       - STRK amount to forward (from AVNU quote)
- * @param routeCalldata    - Swap calldata from AVNU quote
- * @param depositAddress   - NEAR deposit address (destination for STRK)
+ * Build the execution call for an AVNU swap using the SDK.
+ */
+export async function getAvnuSwapCall(
+    quote: Quote,
+    takerAddress: string,
+    slippage: number = 0.01
+): Promise<Call> {
+    const { calls } = await quoteToCalls({
+        quoteId: quote.quoteId,
+        slippage,
+        takerAddress,
+    })
+
+    if (!calls || calls.length === 0) {
+        throw new Error("Failed to generate swap calls from AVNU SDK.")
+    }
+
+    // Return the first call (multi_route_swap)
+    // Ensure all calldata entries are strings to prevent 'invalid_union' errors
+    return {
+        contractAddress: calls[0].contractAddress,
+        entrypoint: calls[0].entrypoint,
+        calldata: (calls[0].calldata as (string | bigint | number)[]).map((v) => v.toString()),
+    }
+}
+
+/**
+ * Build the 3-call StarkNet multicall.
  */
 export function buildMulticall(
     sellTokenAddress: string,
     strkAddress: string,
     sellAmount: string,
     strkAmount: string,
-    routeCalldata: string[],
+    swapCall: Call,
     depositAddress: string
 ): Call[] {
     return [
-        // 1. Approve USDT/USDC to AVNU router
+        // 1. Approve sellToken to AVNU router
         {
             contractAddress: sellTokenAddress,
             entrypoint: "approve",
             calldata: [
-                AVNU_ROUTER,
+                swapCall.contractAddress,
                 cairo.uint256(sellAmount).low,
-                cairo.uint256(sellAmount).high
-            ],
+                cairo.uint256(sellAmount).high,
+            ].map((v) => v.toString()),
         },
 
-        // 2. Execute AVNU swap (sellToken → STRK, STRK lands in user wallet)
-        {
-            contractAddress: AVNU_ROUTER,
-            entrypoint: "multi_route_swap",
-            calldata: routeCalldata,
-        },
+        // 2. Execute AVNU swap call
+        swapCall,
 
-        // 3. Transfer STRK to NEAR deposit address (initiates bridge)
+        // 3. Transfer STRK to NEAR deposit address
         {
             contractAddress: strkAddress,
             entrypoint: "transfer",
             calldata: [
                 depositAddress,
                 cairo.uint256(strkAmount).low,
-                cairo.uint256(strkAmount).high
-            ],
+                cairo.uint256(strkAmount).high,
+            ].map((v) => v.toString()),
         },
     ]
 }
